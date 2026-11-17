@@ -1,26 +1,301 @@
+@import url('https://fonts.googleapis.com/css2?family=UnifrakturCook:wght@700&family=Pirata+One&display=swap');
 @import "tailwindcss";
 
+@theme {
+  /* Surfaces (dark defaults — overridden at runtime by [data-theme="light"]) */
+  --color-base: #000000;
+  --color-panel: #0a0a0a;
+  --color-panel-2: #121212;
+  --color-deep: #000000;
+  --color-marquee: #050505;
+
+  /* Ink — the primary foreground. Light on dark here, dark on light in light mode. */
+  --color-cream: #ffffff;
+
+  /* Fonts (wired to next/font CSS variables from layout) */
+  --font-display: var(--font-cormorant), Georgia, serif;
+  --font-body: var(--font-instrument), system-ui, sans-serif;
+  --font-mono: var(--font-space-mono), ui-monospace, monospace;
+  --font-gothic: cursive;
+}
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Live accent — swappable at runtime via the theme control */
+  --accent: #e5b229;
+  --accent-rgb: 229, 178, 41;
+  --accent-text: #e5b229;
+
+  /* rgb of the ink token, for inline rgba() borders/overlays */
+  --ink-rgb: 242, 239, 233;
+
+  /* Themed decorative gradients */
+  --grad-warm-a: #16130d;
+  --grad-warm-b: #0e0d0c;
+  --map-a: #17150f;
+  --map-b: #151309;
+  --stripe-a: #1a1811;
+  --stripe-b: #151309;
+
+  /* Line-art logos are near-white strokes; leave them as-is on dark. */
+  --logo-filter: none;
+
+  color-scheme: dark;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+/* ---------------------------------------------------------------- LIGHT MODE */
+:root[data-theme="light"] {
+  --color-base: #f4f1ea;
+  --color-panel: #ffffff;
+  --color-panel-2: #efe9dc;
+  --color-deep: #ece7dd;
+  --color-marquee: #ece7dd;
+
+  --color-cream: #1c1813; /* ink flips dark */
+  --ink-rgb: 28, 24, 19;
+
+  --grad-warm-a: #f6f0e3;
+  --grad-warm-b: #f4f1ea;
+  --map-a: #e8e2d5;
+  --map-b: #ded7c7;
+  --stripe-a: #e7e1d4;
+  --stripe-b: #ddd5c5;
+
+  /* Invert the white line-art logos so they read on light surfaces. */
+  --logo-filter: invert(1) brightness(0.82) contrast(1.05);
+
+  color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+  background: var(--color-base);
+  color: var(--color-cream);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+  transition: background-color 0.4s ease, color 0.4s ease;
 }
+
+/* Line-art logo images flip in light mode */
+.theme-logo {
+  filter: var(--logo-filter);
+}
+
+/* Panels that sit over dark photography / the 3D viewer keep light ink in
+   both themes — pin the ink token locally so inner text/borders stay light. */
+.on-media {
+  --color-cream: #ffffff;
+  --ink-rgb: 242, 239, 233;
+}
+
+/* Regions that stay fully dark in both themes (e.g. the hero, whose moody
+   photo only reads emerging from darkness). Pins the whole dark palette
+   locally so scrim, ink and buttons all render as in dark mode. */
+.force-dark {
+  --color-base: #000000;
+  --color-panel: #0a0a0a;
+  --color-panel-2: #121212;
+  --color-deep: #000000;
+  --color-marquee: #050505;
+  --color-cream: #ffff;
+  --ink-rgb: 242, 239, 233;
+  --logo-filter: none;
+}
+
+/* Hero legibility scrim — fades the page background into the photo, per theme */
+.hero-scrim {
+  background: linear-gradient(
+    180deg,
+    var(--color-base) 0%,
+    color-mix(in srgb, var(--color-base) 40%, transparent) 60%,
+    color-mix(in srgb, var(--color-base) 85%, transparent) 100%
+  );
+}
+@media (min-width: 768px) {
+  .hero-scrim {
+    background: linear-gradient(
+      90deg,
+      var(--color-base) 0%,
+      var(--color-base) 40%,
+      color-mix(in srgb, var(--color-base) 72%, transparent) 60%,
+      transparent 82%
+    );
+  }
+}
+
+/* Configurator section warm radial */
+.warm-radial {
+  background: radial-gradient(
+    120% 90% at 50% 0%,
+    var(--grad-warm-a) 0%,
+    var(--grad-warm-b) 55%
+  );
+}
+
+/* Configurator mini-map grid */
+.map-grid {
+  background:
+    repeating-linear-gradient(90deg, var(--map-a) 0 26px, var(--map-b) 26px 27px),
+    repeating-linear-gradient(0deg, var(--map-a) 0 26px, var(--map-b) 26px 27px);
+}
+
+/* Collection placeholder "no image" fill */
+.stripe-fill {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--stripe-a) 0 11px,
+    var(--stripe-b) 11px 22px
+  );
+}
+
+/* Studio viewport backdrop — theme-aware (canvas is transparent over it) */
+.studio-viewport {
+  background: radial-gradient(120% 120% at 50% 10%, #161310 0%, #0b0a09 72%);
+}
+:root[data-theme="light"] .studio-viewport {
+  background: radial-gradient(120% 120% at 50% 10%, #f7f3ea 0%, #e6ded0 74%);
+}
+
+/* Studio sliders — accent fill driven by --p (percent) set inline */
+.fc-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 100px;
+  background: linear-gradient(
+    to right,
+    var(--accent) var(--p, 50%),
+    rgba(var(--ink-rgb), 0.14) var(--p, 50%)
+  );
+  outline: none;
+  cursor: pointer;
+}
+.fc-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 100px;
+  background: var(--color-cream);
+  border: none;
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.35);
+  transition: box-shadow 0.2s ease;
+}
+.fc-range::-webkit-slider-thumb:hover {
+  box-shadow: 0 0 0 5px rgba(var(--accent-rgb), 0.3);
+}
+.fc-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 100px;
+  background: var(--color-cream);
+  border: none;
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.35);
+}
+.fc-range:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Marquee track */
+@keyframes fc-marq {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.fc-marq {
+  display: flex;
+  width: max-content;
+  animation: fc-marq 42s linear infinite;
+}
+
+.fc-marq:hover {
+  animation-play-state: paused;
+}
+
+/* Thin, refined scrollbar to match the calm aesthetic */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-deep);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(var(--ink-rgb), 0.14);
+  border-radius: 100px;
+  border: 2px solid var(--color-deep);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(var(--ink-rgb), 0.24);
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--color-base);
+}
+
+.font-gothic {
+
+}
+
+/* Heretic / Gold display styling */
+.gold-display-text {
+  color: #e5b229;
+  background: linear-gradient(180deg, #fce077 0%, #e5b229 40%, #c99318 85%, #9b6c08 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 4px 24px rgba(229, 178, 41, 0.2));
+}
+
+.gold-accent {
+  color: #e5b229;
+}
+
+/* ── Patron Custom Model Button ── */
+@keyframes patron-glow-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(var(--accent-rgb), 0.15),
+      0 0 28px rgba(var(--accent-rgb), 0.18),
+      inset 0 1px 0 rgba(255,255,255,0.06);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(var(--accent-rgb), 0.35),
+      0 0 42px rgba(var(--accent-rgb), 0.30),
+      0 0 80px rgba(var(--accent-rgb), 0.08),
+      inset 0 1px 0 rgba(255,255,255,0.09);
+  }
+}
+
+.patron-custom-btn {
+  animation: patron-glow-pulse 3s ease-in-out infinite;
+  text-decoration: none;
+  display: flex;
+}
+
+.patron-custom-btn:hover {
+  animation: none;
+  box-shadow:
+    0 0 0 1px rgba(var(--accent-rgb), 0.5),
+    0 0 50px rgba(var(--accent-rgb), 0.35),
+    0 0 100px rgba(var(--accent-rgb), 0.12),
+    inset 0 1px 0 rgba(255,255,255,0.1) !important;
+  transform: translateY(-1px);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
