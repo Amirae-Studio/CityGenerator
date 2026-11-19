@@ -1,0 +1,68 @@
+{
+  "appId": "city-generator",
+  "name": "City Generator",
+  "entryUrl": "http://localhost:5174/",
+  "capabilities": ["export", "toast", "requestAccess"],
+  "membershipType": "partial_buyout",
+  "membership": {
+    "status": "unpurchased",
+    "functionKeys": []
+  },
+  "exportQuota": {
+    "remaining": 999999,
+    "limit": 999999,
+    "resetAt": 0,
+    "period": ""
+  },
+  "priceInfo": {
+    "functions": [
+      {
+        "functionKey": "commercial_eeee",
+        "functionName": "Commercial License",
+        "originPrice": 99000,
+        "originPriceDisplay": {
+          "amount": 99000,
+          "currency": "USD",
+          "currencySign": "$",
+          "preferenceAmount": 99000,
+          "preferenceCurrency": "USD",
+          "preferenceCurrencySign": "$"
+        },
+        "discountConfig": {
+          "discountPrice": 99000,
+          "discountPriceDisplay": {
+            "amount": 99000,
+            "currency": "USD",
+            "currencySign": "$",
+            "preferenceAmount": 99000,
+            "preferenceCurrency": "USD",
+            "preferenceCurrencySign": "$"
+          },
+          "startTime": 0,
+          "endTime": 0
+        },
+        "permissionScope": "<p>Permission to sell and otherwise use physical prints of models made with City Generator for commercial purposes during an active license.</p><p>Map data © OpenStreetMap contributors and the other sources credited in the app. <strong>Attribution required.</strong></p>"
+      }
+    ]
+  },
+  "csp": {
+    "script-src": "'self' 'unsafe-inline' 'wasm-unsafe-eval'",
+    "style-src": "'self' 'unsafe-inline'",
+    "img-src": "'self' data: blob: https://server.arcgisonline.com https://api.mapbox.com https://tiles.openfreemap.org https://s3.amazonaws.com",
+    "font-src": "'self' data:",
+    "worker-src": "'self' blob:",
+    "connect-src": "'self' blob: data: http://localhost:5174 ws://localhost:5174 https://overpass-api.de https://overpass.private.coffee https://maps.mail.ru https://photon.komoot.io https://api.mapbox.com https://server.arcgisonline.com https://tiles.openfreemap.org https://s3.amazonaws.com https://stac.overturemaps.org https://tiles.overturemaps.org https://api.plateau.reearth.io https://assets.cms.plateau.reearth.io https://mreversegeocoder.gsi.go.jp https://data.3dbag.nl https://3d.geo.admin.ch"
+  },
+  "sandboxOverrides": {
+    "allowScripts": true,
+    "allowSameOrigin": true,
+    "allowDownloads": false,
+    "allowForms": false,
+    "allowPopups": false,
+    "allowPopupsToEscapeSandbox": false,
+    "allowStorageAccessByUserActivation": false
+  },
+  "permissionsOverrides": {
+    "localFonts": false
+  }
+}

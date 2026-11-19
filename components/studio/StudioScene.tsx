@@ -1,12 +1,9 @@
-"use client";
-
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useLoader } from "@react-three/fiber";
 import {
   OrbitControls,
   TransformControls,
   Edges,
-  Html,
 } from "@react-three/drei";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
@@ -15,7 +12,8 @@ import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 const dracoLoader = new DRACOLoader();
-dracoLoader.setDecoderPath("https://www.gstatic.com/draco/versioned/decoders/1.5.5/");
+// Decoders ship with the app (public/draco) — no third-party script host.
+dracoLoader.setDecoderPath(new URL("draco/", document.baseURI).href);
 import { MM, DEFAULT_LAYER_COLORS, type CityControls } from "@/lib/studio";
 import type { ModelFile } from "@/lib/types";
 
@@ -887,16 +885,30 @@ function PlaceholderTile({
   );
 }
 
-function Loader() {
+/**
+ * Marks the scene as loading while mounted. The spinner itself is a normal DOM
+ * overlay outside the Canvas: drei's <Html> mounts a separate React root and
+ * tears it down synchronously when the model resolves, which React 19 rejects
+ * ("synchronously unmount a root while React was already rendering").
+ */
+function Loader({ onLoading }: { onLoading: (busy: boolean) => void }) {
+  useEffect(() => {
+    onLoading(true);
+    return () => onLoading(false);
+  }, [onLoading]);
+  return null;
+}
+
+function LoadingOverlay() {
   return (
-    <Html center>
+    <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
       <div className="flex flex-col items-center gap-3">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-cream/20 border-t-[color:var(--accent)]" />
         <span className="whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.24em] text-cream/55">
           Loading model…
         </span>
       </div>
-    </Html>
+    </div>
   );
 }
 
@@ -937,7 +949,9 @@ export default function StudioScene({
   onTarget: (o: THREE.Object3D | null) => void;
   onTransform: (o: THREE.Object3D) => void;
 }) {
+  const [busy, setBusy] = useState(false);
   return (
+    <div className="relative h-full w-full">
     <Canvas
       shadows
       dpr={[1, 2]}
@@ -973,9 +987,9 @@ export default function StudioScene({
 
       {/* One render path — no placeholder→model swap. */}
       {loading ? (
-        <Loader />
+        <Loader onLoading={setBusy} />
       ) : files.length > 0 ? (
-        <Suspense fallback={<Loader />}>
+        <Suspense fallback={<Loader onLoading={setBusy} />}>
           <CityAssembly
             key={files[0].url}
             files={files}
@@ -991,5 +1005,7 @@ export default function StudioScene({
 
       <StudioCameraControls />
     </Canvas>
+    {busy && <LoadingOverlay />}
+    </div>
   );
 }

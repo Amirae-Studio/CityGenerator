@@ -14,7 +14,7 @@ const cache = new Map<string, Promise<BambuProfile>>();
 export function loadBambuProfile(printerId: string): Promise<BambuProfile> {
   let p = cache.get(printerId);
   if (!p) {
-    p = fetch(`/bambu/${encodeURIComponent(printerId)}.json`).then((r) => {
+    p = fetch(`./bambu/${encodeURIComponent(printerId)}.json`).then((r) => {
       if (!r.ok) throw new Error(`No Bambu profile for printer "${printerId}"`);
       return r.json() as Promise<BambuProfile>;
     });

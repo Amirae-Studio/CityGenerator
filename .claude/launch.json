@@ -3,8 +3,9 @@
   "configurations": [
     {
       "name": "citygen",
-      "url": "http://localhost:3000",
-      "port": 3000
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["vite", "--port", "5174", "--strictPort"],
+      "port": 5174
     }
   ]
 }

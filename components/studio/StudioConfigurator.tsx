@@ -1,8 +1,4 @@
-"use client";
-
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import dynamic from "next/dynamic";
-import Link from "next/link";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import * as THREE from "three";
 import {
@@ -27,11 +23,17 @@ import { FramePanel } from "./FramePanel";
 import { buildFrame, frameSTL, seatHeight, FRAME_DEFAULTS, type FrameBuild, type FrameOptions } from "@/lib/frame";
 import SegmentedToggle from "../ui/Switch";
 import { TerrainModePicker, type TerrainChoice } from "@/components/explore/TerrainModePicker";
+import { useMakerLab } from "@/lib/makerlab/MakerLabProvider";
+import { buildObj, captureCover, type ObjPart } from "@/lib/makerlab/obj";
+import type { ExportArtifactInput } from "@/lib/makerlab/types";
+import { CommercialLicenseButton } from "@/components/CommercialLicenseButton";
 
 
-const StudioScene = dynamic(() => import("./StudioScene"), {
-  ssr: false,
-  loading: () => (
+// three.js / react-three-fiber load as their own chunk, on entering the Studio.
+const StudioScene = lazy(() => import("./StudioScene"));
+
+function ScenePlaceholder() {
+  return (
     <div className="flex h-full items-center justify-center">
       <div className="flex flex-col items-center gap-3">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-cream/20 border-t-[color:var(--accent)]" />
@@ -40,8 +42,8 @@ const StudioScene = dynamic(() => import("./StudioScene"), {
         </span>
       </div>
     </div>
-  ),
-});
+  );
+}
 
 type ExportFormat = "3mf" | "stl";
 
@@ -82,6 +84,7 @@ export function StudioConfigurator({
   terrainControl?: TerrainChoice & { busy: boolean; onChange: (t: TerrainChoice) => void };
 }) {
   const meshRef = useRef<THREE.Object3D | null>(null);
+  const ml = useMakerLab();
   const { mode: themeMode } = useTheme();
   const light = themeMode === "light";
 
@@ -269,31 +272,6 @@ export function StudioConfigurator({
     };
   }
 
-  async function downloadFrame(format: "stl" | "3mf") {
-    if (!frame) return;
-    setFrameDownload(format);
-    try {
-      const blob =
-        format === "stl"
-          ? await frameSTL(frame.text ? [frame.geometry, frame.text] : [frame.geometry])
-          : await exportTo3MF(new THREE.Group(), {
-              printerId,
-              frameOnly: framePlate(frame),
-            });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `framecity-${city.slug}-${location.slug}-frame.${format}`;
-      a.click();
-      URL.revokeObjectURL(url);
-      setDownloadNotice(`Frame ${format.toUpperCase()} ready — ${Math.round(frame.size.w)} × ${Math.round(frame.size.d)} mm.`);
-    } catch (err) {
-      console.error(err);
-      alert("Couldn't export the frame.");
-    } finally {
-      setFrameDownload(null);
-    }
-  }
 
   /** Sits the model on the bed: lowest point at zero height. */
   function dropToBed(mesh: THREE.Object3D) {
@@ -357,30 +335,163 @@ export function StudioConfigurator({
     measure(false);
   }
 
+  /* ── Export ─────────────────────────────────────────────────────────────
+     Inside MakerLab every file goes through sdk.export(): the iframe can't
+     download by itself, and the host builds the 3MF (from OBJ + MTL), lets the
+     user pick printer and nozzle, and applies the export quota. Opened on its
+     own (standalone), the app downloads the files directly as before. */
+
+  const fileBase = `city-generator-${location.slug}`;
+
+  /** Host toast when available, otherwise the in-page notice. */
+  async function notify(message: string, type: "success" | "info" | "error" = "info") {
+    if (!(await ml.toast({ message, type }))) setDownloadNotice(message);
+  }
+
+  /** The model as OBJ parts (mm, Z up), one entry per layer/colour. */
+  function modelParts(mesh: THREE.Object3D): ObjPart[] {
+    const entries = collectTransformedMeshes(mesh);
+    if (entries.length === 0) throw new Error("No visible meshes found to export.");
+    return entries;
+  }
+
+  function frameParts(f: FrameBuild): ObjPart[] {
+    return [
+      { name: "Frame", geometry: f.geometry, color: frameOpts.color },
+      ...(f.text ? [{ name: "Frame text", geometry: f.text, color: frameOpts.labelColor }] : []),
+    ];
+  }
+
+  async function stlBuffer(geometries: THREE.BufferGeometry[]): Promise<ArrayBuffer> {
+    const { STLExporter } = await import("three/examples/jsm/exporters/STLExporter.js");
+    const group = new THREE.Group();
+    geometries.forEach((g) => group.add(new THREE.Mesh(g)));
+    const data = new STLExporter().parse(group, { binary: true }) as DataView;
+    return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+  }
+
+  /** Can this export go to MakerLab? Shows why not when it can't. */
+  function hostReady(): boolean {
+    if (ml.status === "ready" && ml.can("export")) return true;
+    const why =
+      ml.status === "connecting"
+        ? "Still connecting to MakerLab — try again in a moment."
+        : ml.status === "ready"
+          ? "Export isn't enabled for this app."
+          : ml.status === "error"
+            ? `Couldn't connect to MakerLab${ml.error ? ` ${ml.error}` : ""}. Reload the page and try again.`
+            : "Lost the connection to MakerLab. Reload the page and try again.";
+    setDownloadNotice(why);
+    return false;
+  }
+
+  /** Sends one artifact to the host. Cancelling (or an exhausted quota) is silent. */
+  async function sendToHost(artifact: ExportArtifactInput) {
+    const sdk = ml.sdk!;
+    try {
+      const result = await sdk.export({ artifacts: [artifact] });
+      if (result.success) await notify(`Exported as ${result.format.toUpperCase()}.`, "success");
+      // The host reports a closed export window (or used-up quota) as a
+      // failed result as well as by rejecting — either way, stay silent.
+      else if (result.errorCode === "EXPORT_USER_CANCELLED") return;
+      else await notify(`Export failed: ${result.errorMessage ?? result.errorCode}`, "error");
+    } catch (err) {
+      // The user closed the export window, or has no exports left — the host
+      // already told them. Just stop.
+      if (ml.isError(err, "EXPORT_USER_CANCELLED")) return;
+      console.error("[MakerLab] export failed", err);
+      const code = (err as { code?: string })?.code;
+      await notify(code ? `Export failed (${code}).` : "Export failed. Please try again.", "error");
+    }
+  }
+
+  function saveLocally(blob: Blob, name: string) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function downloadFrame(format: "stl" | "3mf") {
+    if (!frame) return;
+    if (ml.hosted && !hostReady()) return;
+    setFrameDownload(format);
+    const size = `${Math.round(frame.size.w)} × ${Math.round(frame.size.d)} mm`;
+    try {
+      const geoms = frame.text ? [frame.geometry, frame.text] : [frame.geometry];
+      if (ml.hosted) {
+        if (format === "stl") {
+          await sendToHost({
+            fileName: `${fileBase}-frame.stl`,
+            format: "stl",
+            buffer: await stlBuffer(geoms),
+            coverImage: captureCover(),
+            description: `Frame for ${location.name} — ${size}`,
+          });
+        } else {
+          const { buffers, mtl } = buildObj([frameParts(frame)]);
+          await sendToHost({
+            fileName: `${fileBase}-frame.obj`,
+            format: "obj",
+            buffer: buffers[0],
+            mtl,
+            coverImage: captureCover(),
+            description: `Frame for ${location.name} — ${size}`,
+          });
+        }
+        return;
+      }
+      const blob =
+        format === "stl"
+          ? await frameSTL(geoms)
+          : await exportTo3MF(new THREE.Group(), { printerId, frameOnly: framePlate(frame) });
+      saveLocally(blob, `${fileBase}-frame.${format}`);
+      setDownloadNotice(`Frame ${format.toUpperCase()} ready — ${size}.`);
+    } catch (err) {
+      console.error(err);
+      setDownloadNotice("Couldn't export the frame.");
+    } finally {
+      setFrameDownload(null);
+    }
+  }
+
   // Either format is available at any point. Colours are a property of the
   // model, not a precondition for 3MF — with them off it just exports in one
   // colour.
   async function downloadModel(format: ExportFormat) {
     const mesh = meshRef.current;
     if (!mesh) return;
+    if (ml.hosted && !hostReady()) return;
 
     setExportingAs(format);
     setDownloadNotice(null);
+    const description = `${location.name} — ${location.area} (${location.coords})`;
 
     try {
       if (format === "3mf") {
-        const withFrame = frameOn && frame;
+        const withFrame = !!(frameOn && frame);
+        if (ml.hosted) {
+          // OBJ + MTL → the host builds a multi-colour 3MF; the frame goes on plate 2.
+          const plates = [modelParts(mesh), ...(withFrame && frame ? [frameParts(frame)] : [])];
+          const { buffers, mtl } = buildObj(plates);
+          plates[0].forEach((p) => p.geometry.dispose());
+          await sendToHost({
+            fileName: `${fileBase}.obj`,
+            format: "obj",
+            buffer: buffers.length > 1 ? buffers : buffers[0],
+            mtl,
+            coverImage: captureCover(),
+            description,
+          });
+          return;
+        }
         const blob = await exportTo3MF(mesh, {
           printerId,
-          extra: withFrame ? [framePlate(frame)] : [],
+          extra: withFrame && frame ? [framePlate(frame)] : [],
         });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `framecity-${city.slug}-${location.slug}.3mf`;
-        a.click();
-        URL.revokeObjectURL(url);
-
+        saveLocally(blob, `${fileBase}.3mf`);
         const colorNote =
           (cityCtl.enableColors
             ? " — colors included"
@@ -388,37 +499,19 @@ export function StudioConfigurator({
           (withFrame ? ". Frame is on plate 2." : ".");
         setDownloadNotice(`3MF file ready${colorNote}`);
       } else {
-        const { STLExporter } = await import(
-          "three/examples/jsm/exporters/STLExporter.js"
-        );
-        const entries = collectTransformedMeshes(mesh);
-        if (entries.length === 0) {
-          throw new Error("No visible meshes found to export.");
-        }
-
-        const exportGroup = new THREE.Group();
-        entries.forEach((entry) => {
-          const exportMesh = new THREE.Mesh(entry.geometry);
-          exportGroup.add(exportMesh);
-        });
-
-        const data = new STLExporter().parse(exportGroup, { binary: true });
+        const entries = modelParts(mesh);
+        const buffer = await stlBuffer(entries.map((e) => e.geometry));
         entries.forEach((e) => e.geometry.dispose());
-
-        const buffer = (data as DataView).buffer as ArrayBuffer;
-        const blob = new Blob([buffer], { type: "model/stl" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `framecity-${city.slug}-${location.slug}.stl`;
-        a.click();
-        URL.revokeObjectURL(url);
-
+        if (ml.hosted) {
+          await sendToHost({ fileName: `${fileBase}.stl`, format: "stl", buffer, coverImage: captureCover(), description });
+          return;
+        }
+        saveLocally(new Blob([buffer], { type: "model/stl" }), `${fileBase}.stl`);
         setDownloadNotice("STL file ready.");
       }
     } catch (err) {
       console.error("Export error:", err);
-      alert(`Failed to generate ${format.toUpperCase()} file.`);
+      setDownloadNotice(`Failed to generate the ${format.toUpperCase()} file.`);
     } finally {
       setExportingAs(null);
     }
@@ -491,9 +584,8 @@ export function StudioConfigurator({
 
                 {/* Hero Image 1 */}
                 <div className="overflow-hidden rounded-xl border border-cream/[0.12]">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
-                    src="/revit.jpg"
+                    src="./revit.jpg"
                     alt="Revit base frame explainer — city model sitting on a rigid base plate"
                     className="w-full object-cover"
                     style={{ maxHeight: "260px" }}
@@ -547,8 +639,10 @@ export function StudioConfigurator({
 
       {/* Header */}
       <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-cream/[0.09] bg-deep/70 px-4 backdrop-blur-xl md:px-6">
-        <div className="flex min-w-0 items-center gap-4">
-          {onBack ? (
+        {/* Shrinks (and clips) before the action buttons do, so the title
+            never runs under them in a narrow MakerLab iframe. */}
+        <div className="flex min-w-0 flex-1 items-center gap-4 overflow-hidden">
+          {onBack && (
             <button
               type="button"
               onClick={onBack}
@@ -557,16 +651,8 @@ export function StudioConfigurator({
               <span aria-hidden>←</span>
               <span className="hidden sm:inline">Map</span>
             </button>
-          ) : (
-            <Link
-              href="/"
-              className="flex shrink-0 items-center gap-2 rounded-full border border-cream/[0.16] px-4 py-2 text-[12.5px] text-cream/70 no-underline transition-colors hover:border-cream/40 hover:text-cream"
-            >
-              <span aria-hidden>←</span>
-              <span className="hidden sm:inline">Back</span>
-            </Link>
           )}
-          <div className="min-w-0">
+          <div className="min-w-0 overflow-hidden">
             <div
               className="font-mono text-[9px] font-bold uppercase tracking-[0.3em]"
               style={{ color: "var(--accent)" }}
@@ -580,6 +666,7 @@ export function StudioConfigurator({
         </div>
 
         <div className="flex shrink-0 items-center gap-3">
+          <CommercialLicenseButton />
           <ThemeToggle />
           <button
             onClick={openFrame}
@@ -637,6 +724,7 @@ export function StudioConfigurator({
             activeTab ? "lg:pl-[380px]" : "lg:pl-[76px]"
           }`}
         >
+          <Suspense fallback={<ScenePlaceholder />}>
           <StudioScene
             bedW={printer.bed[0]}
             bedD={printer.bed[1]}
@@ -659,6 +747,7 @@ export function StudioConfigurator({
                 : null
             }
           />
+          </Suspense>
 
           <div className="pointer-events-none absolute bottom-4 left-1/2 hidden -translate-x-1/2 rounded-full border border-cream/[0.12] bg-deep/60 px-[13px] py-[7px] font-mono text-[10px] uppercase tracking-[0.16em] text-cream/45 backdrop-blur-[6px] md:block">
             {mode ? "Drag the gizmo · " : "Drag to orbit · "}scroll to zoom · right-drag to pan

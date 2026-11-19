@@ -1,9 +1,10 @@
-// Tree models for Explore World, stored as STL files in public/trees.
+// Tree models for Explore World: built in code (or custom STLs in
+// public/trees when USE_STL_FILES is on).
 // Each one is loaded once, turned Y-up, stood on its trunk at the origin and
 // scaled to one unit tall, so the model builder can stamp copies of it.
 
 import * as THREE from "three";
-import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { mergeGeometries, mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 export type TreeModelId = "tree1" | "tree2" | "tree3";
 
@@ -39,13 +40,56 @@ export function loadTree(id: TreeModelId): Promise<TreeTemplate> {
   return p;
 }
 
+/** Set to true after putting tree1.stl … tree3.stl in public/trees to use them. */
+const USE_STL_FILES = false;
+
 async function fetchTree(id: TreeModelId): Promise<TreeTemplate> {
+  if (!USE_STL_FILES) return normalize(id, builtInTree(id));
   const model = TREE_MODELS.find((m) => m.id === id)!;
-  const res = await fetch(`/trees/${model.file}`);
-  if (!res.ok) throw new Error(`Tree model ${model.file}: ${res.status}`);
+  const res = await fetch(`./trees/${model.file}`).catch(() => null);
+  if (!res?.ok) return normalize(id, builtInTree(id));
   const { STLLoader } = await import("three/examples/jsm/loaders/STLLoader.js");
   const raw = new STLLoader().parse(await res.arrayBuffer());
   return normalize(id, raw);
+}
+
+/**
+ * Low-poly print-friendly trees built in code, so the app needs no model files.
+ * Returned Z-up like an STL, so they go through the same normalize step.
+ */
+function builtInTree(id: TreeModelId): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const add = (g: THREE.BufferGeometry, y: number, x = 0, z = 0) => {
+    g.translate(x, y, z);
+    parts.push(g);
+  };
+  // Trunk, sunk slightly into the crown so the solids overlap.
+  add(new THREE.CylinderGeometry(0.07, 0.09, 0.34, 8), 0.17);
+  if (id === "tree1") {
+    // Classic: a single cone.
+    add(new THREE.ConeGeometry(0.34, 0.76, 10), 0.62);
+  } else if (id === "tree2") {
+    // Leafy: a rounded crown of three blobs.
+    add(new THREE.IcosahedronGeometry(0.3, 1), 0.62);
+    add(new THREE.IcosahedronGeometry(0.2, 1), 0.52, 0.2, 0.05);
+    add(new THREE.IcosahedronGeometry(0.2, 1), 0.55, -0.17, -0.1);
+  } else {
+    // Grand: three stacked tiers, like a fir.
+    add(new THREE.ConeGeometry(0.4, 0.42, 10), 0.45);
+    add(new THREE.ConeGeometry(0.31, 0.38, 10), 0.68);
+    add(new THREE.ConeGeometry(0.21, 0.34, 10), 0.86);
+  }
+  const flat = parts.map((g) => {
+    const n = g.index ? g.toNonIndexed() : g;
+    n.deleteAttribute("uv");
+    n.deleteAttribute("normal");
+    if (n !== g) g.dispose();
+    return n;
+  });
+  const merged = mergeGeometries(flat)!;
+  flat.forEach((g) => g.dispose());
+  merged.rotateX(Math.PI / 2); // Y-up → Z-up, as an STL would be
+  return merged;
 }
 
 function normalize(id: TreeModelId, raw: THREE.BufferGeometry): TreeTemplate {

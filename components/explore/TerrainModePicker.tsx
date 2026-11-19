@@ -1,5 +1,3 @@
-"use client";
-
 import type { TerrainMode } from "@/lib/explore/elevation";
 
 export type TerrainChoice = { mode: TerrainMode };

@@ -1,5 +1,3 @@
-"use client";
-
 import { useEffect, useState, type ReactNode } from "react";
 import { Lock, LockOpen, Maximize2, Move3d, RotateCw, Scaling, Undo2, Crosshair, Check, TriangleAlert } from "lucide-react";
 import Scrubber from "../ui/Scrubber";

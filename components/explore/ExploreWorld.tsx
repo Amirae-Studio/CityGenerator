@@ -1,14 +1,10 @@
-"use client";
-
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import dynamic from "next/dynamic";
-import Link from "next/link";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Check, Globe2 } from "lucide-react";
 import { DEFAULT_LAYER_COLORS, FILAMENT_LINES } from "@/lib/studio";
 import type { ModelFile } from "@/lib/types";
-import { Logo } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { CommercialLicenseButton } from "@/components/CommercialLicenseButton";
 import Scrubber from "@/components/ui/Scrubber";
 import { StudioConfigurator } from "@/components/studio/StudioConfigurator";
 import { bounds, formatMeters, shapePolygon, type FrameShape } from "@/lib/explore/geo";
@@ -19,10 +15,8 @@ import { TreePicker } from "./TreePicker";
 import { DEFAULT_TREE, loadTree, type TreeModelId, type TreeTemplate } from "@/lib/explore/trees";
 import { buildExploreModel, PRINT_MM, summarize, TREE_PRINT_MM, type ExploreLayer, type LayerSummary } from "@/lib/explore/buildModel";
 
-const MapPicker = dynamic(() => import("./MapPicker").then((m) => m.MapPicker), {
-  ssr: false,
-  loading: () => <div className="h-full animate-pulse bg-cream/[0.04]" />,
-});
+// The map (MapLibre) is a separate chunk so the first paint stays light.
+const MapPicker = lazy(() => import("./MapPicker").then((m) => ({ default: m.MapPicker })));
 
 type Phase = "map" | "scanning" | "customize" | "building" | "studio";
 
@@ -217,6 +211,7 @@ export function ExploreWorld() {
         </div>
         <div className="flex shrink-0 items-center gap-3">
           <StepPills phase={phase} />
+          <CommercialLicenseButton compact />
           <ThemeToggle />
           {/* <Link href="/" className="hidden md:inline-flex">
             <Logo className="theme-logo h-7" />
@@ -225,14 +220,16 @@ export function ExploreWorld() {
       </header>
 
       <main className="relative flex-1">
-        <MapPicker
-          shape={shape}
-          onShapeChange={patchShape}
-          onPlaceName={setPlaceName}
-          onConfirm={startScan}
-          busy={phase !== "map"}
-          locked={phase !== "map"}
-        />
+        <Suspense fallback={<div className="h-full animate-pulse bg-cream/[0.04]" />}>
+          <MapPicker
+            shape={shape}
+            onShapeChange={patchShape}
+            onPlaceName={setPlaceName}
+            onConfirm={startScan}
+            busy={phase !== "map"}
+            locked={phase !== "map"}
+          />
+        </Suspense>
 
         <AnimatePresence>
           {error && phase === "map" && (

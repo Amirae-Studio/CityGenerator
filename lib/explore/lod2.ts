@@ -81,12 +81,63 @@ async function plateauTilesets(shape: FrameShape, signal?: AbortSignal): Promise
       }
     })
   );
-  const unique = [...new Set(codes.filter(Boolean))];
+  const unique = [...new Set(codes.filter((c): c is string => !!c))];
   if (!unique.length) return [];
-  const res = await fetch(`/api/explore/plateau?codes=${unique.join(",")}`, { signal });
-  if (!res.ok) return [];
-  const json = (await res.json()) as { tilesets: { url: string }[] };
-  return json.tilesets.map((t) => t.url);
+  try {
+    const byCode = await plateauCatalog();
+    return unique.flatMap((code) => {
+      const url = byCode.get(code);
+      return url ? [url] : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+/*
+ * PLATEAU's dataset catalog (~10 MB, CORS-enabled). It used to be read by a
+ * server route; the app is now static, so the browser fetches it once — only
+ * when a frame is in Japan — and keeps the LOD2 building tileset per
+ * municipality code.
+ */
+const PLATEAU_CATALOG = "https://api.plateau.reearth.io/datacatalog/plateau-datasets";
+
+type PlateauDataset = {
+  type_en?: string;
+  lod?: string;
+  url: string;
+  year?: number;
+  texture?: boolean;
+  city_code?: string;
+  ward_code?: string | null;
+};
+
+let plateauPromise: Promise<Map<string, string>> | null = null;
+
+function plateauCatalog(): Promise<Map<string, string>> {
+  plateauPromise ??= (async () => {
+    const res = await fetch(PLATEAU_CATALOG);
+    if (!res.ok) throw new Error(`PLATEAU catalog ${res.status}`);
+    const { datasets } = (await res.json()) as { datasets: PlateauDataset[] };
+    const best = new Map<string, PlateauDataset>();
+    for (const d of datasets) {
+      if (d.type_en !== "bldg" || d.lod !== "2" || !d.url?.endsWith("tileset.json")) continue;
+      const code = d.ward_code || d.city_code;
+      if (!code) continue;
+      // Prints need no textures (and they're 3× larger): prefer untextured, then newest.
+      const prev = best.get(code);
+      const better =
+        !prev ||
+        (!!prev.texture && !d.texture) ||
+        (!!prev.texture === !!d.texture && (d.year ?? 0) > (prev.year ?? 0));
+      if (better) best.set(code, d);
+    }
+    return new Map([...best].map(([code, d]) => [code.padStart(5, "0"), d.url]));
+  })().catch((err) => {
+    plateauPromise = null;
+    throw err;
+  });
+  return plateauPromise;
 }
 
 /* ── Geodesy ─────────────────────────────────────────────────────────── */
@@ -208,7 +259,7 @@ function gltfLoader(): Promise<GLTFLoader> {
       import("three/examples/jsm/loaders/DRACOLoader.js"),
       import("three/examples/jsm/libs/meshopt_decoder.module.js"),
     ]);
-    const draco = new DRACOLoader().setDecoderPath("https://www.gstatic.com/draco/versioned/decoders/1.5.7/");
+    const draco = new DRACOLoader().setDecoderPath(new URL("draco/", document.baseURI).href);
     return new GLTFLoader().setDRACOLoader(draco).setMeshoptDecoder(MeshoptDecoder);
   })();
   return loaderPromise;

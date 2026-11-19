@@ -1,5 +1,3 @@
-"use client";
-
 import { useEffect, useState } from "react";
 import * as THREE from "three";
 import { loadTree, TREE_MODELS, type TreeModelId, type TreeTemplate } from "@/lib/explore/trees";
@@ -73,7 +71,6 @@ export function TreePicker({
           >
             <span className="flex aspect-square w-full items-center justify-center">
               {src ? (
-                // eslint-disable-next-line @next/next/no-img-element
                 <img src={src} alt="" className="h-full w-full object-contain" />
               ) : failed[m.id] ? (
                 <span className="font-mono text-[9px] text-cream/40">Unavailable</span>

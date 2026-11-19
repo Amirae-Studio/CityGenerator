@@ -1,13 +1,17 @@
-"use client";
-
 import { useCallback, useEffect, useRef, useState } from "react";
-import maplibregl, {
-  type GeoJSONSource,
-  type Map as MLMap,
-  type MapMouseEvent,
-  type MapTouchEvent,
+import type {
+  GeoJSONSource,
+  Map as MLMap,
+  MapMouseEvent,
+  MapTouchEvent,
 } from "maplibre-gl";
+// CSP build: its web worker is a real file served from 'self' instead of a
+// blob: URL, so MakerLab's strict CSP (worker-src 'self') allows it.
+import maplibregl from "maplibre-gl/dist/maplibre-gl-csp.js";
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-csp-worker.js?url";
 import "maplibre-gl/dist/maplibre-gl.css";
+
+maplibregl.setWorkerUrl(maplibreWorkerUrl);
 import {
   Circle,
   Crosshair,
@@ -47,68 +51,102 @@ import { PRINT_MM } from "@/lib/explore/buildModel";
 const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services";
 
 /** Optional: with a Mapbox token the map uses Mapbox satellite imagery and
- *  geocoding (same as the Blender BLOSM setup). Without one, Esri + Photon. */
-const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+ *  geocoding (same as the Blender BLOSM setup). Without one — or if Mapbox
+ *  refuses the token — Esri imagery + Photon search. */
+const MAPBOX_TOKEN: string | undefined = import.meta.env.NEXT_PUBLIC_MAPBOX_TOKEN || undefined;
 
-const mapboxRaster = (style: string): maplibregl.RasterSourceSpecification => ({
-  type: "raster",
-  tiles: [`https://api.mapbox.com/styles/v1/mapbox/${style}/tiles/256/{z}/{x}/{y}@2x?access_token=${MAPBOX_TOKEN}`],
-  tileSize: 256,
-  maxzoom: 22,
-  attribution: "© Mapbox © OpenStreetMap contributors",
-});
+/*
+ * Neutral map display: no country borders (disputed or not) and no country,
+ * state or sea names anywhere on the map, to stay clear of territorial
+ * disputes. So the imagery is photo-only (Mapbox satellite-v9, Esri World
+ * Imagery), the satellite overlay is Esri's roads-only reference layer, and the
+ * street map is OpenFreeMap vector tiles with those layers removed.
+ */
+const ESRI_STYLE_SOURCES: maplibregl.StyleSpecification["sources"] = {
+  "sat-esri": {
+    type: "raster",
+    tiles: [`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`],
+    tileSize: 256,
+    maxzoom: 19,
+    attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
+  },
+  roads: {
+    type: "raster",
+    tiles: [`${ESRI}/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}`],
+    tileSize: 256,
+    maxzoom: 19,
+  },
+};
 
-const ESRI_STYLE: maplibregl.StyleSpecification = {
+const MAP_STYLE: maplibregl.StyleSpecification = {
   version: 8,
   sources: {
-    satellite: {
-      type: "raster",
-      tiles: [`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`],
-      tileSize: 256,
-      maxzoom: 19,
-      attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
-    },
-    transport: {
-      type: "raster",
-      tiles: [`${ESRI}/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}`],
-      tileSize: 256,
-      maxzoom: 19,
-    },
-    places: {
-      type: "raster",
-      tiles: [`${ESRI}/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}`],
-      tileSize: 256,
-      maxzoom: 19,
-    },
-    streets: {
-      type: "raster",
-      tiles: ["a", "b", "c", "d"].map(
-        (s) => `https://${s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png`
-      ),
-      tileSize: 256,
-      maxzoom: 20,
-      attribution: "© OpenStreetMap contributors © CARTO",
-    },
+    ...(MAPBOX_TOKEN
+      ? {
+          "sat-mapbox": {
+            type: "raster",
+            tiles: [`https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/256/{z}/{x}/{y}@2x?access_token=${MAPBOX_TOKEN}`],
+            tileSize: 256,
+            maxzoom: 22,
+            attribution: "© Mapbox © OpenStreetMap contributors",
+          },
+        }
+      : {}),
+    ...ESRI_STYLE_SOURCES,
   },
   layers: [
-    { id: "satellite", type: "raster", source: "satellite" },
-    { id: "transport", type: "raster", source: "transport", paint: { "raster-opacity": 0.75 } },
-    { id: "places", type: "raster", source: "places" },
-    { id: "streets", type: "raster", source: "streets", layout: { visibility: "none" } },
+    ...(MAPBOX_TOKEN ? [{ id: "sat-mapbox", type: "raster" as const, source: "sat-mapbox" }] : []),
+    {
+      id: "sat-esri",
+      type: "raster",
+      source: "sat-esri",
+      layout: { visibility: MAPBOX_TOKEN ? "none" : "visible" },
+    },
+    { id: "roads", type: "raster", source: "roads", paint: { "raster-opacity": 0.75 } },
   ],
 };
 
-const MAPBOX_STYLE: maplibregl.StyleSpecification = {
-  version: 8,
-  sources: { satellite: mapboxRaster("satellite-streets-v12"), streets: mapboxRaster("streets-v12") },
-  layers: [
-    { id: "satellite", type: "raster", source: "satellite" },
-    { id: "streets", type: "raster", source: "streets", layout: { visibility: "none" } },
-  ],
-};
+/** Street map: OpenFreeMap (free, no key) minus borders and political labels. */
+const STREET_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
+const STREET_PREFIX = "street-";
 
-const MAP_STYLE = MAPBOX_TOKEN ? MAPBOX_STYLE : ESRI_STYLE;
-const SAT_LAYERS = MAPBOX_TOKEN ? ["satellite"] : ["satellite", "transport", "places"];
+function isPolitical(layer: maplibregl.LayerSpecification): boolean {
+  const src = "source-layer" in layer ? layer["source-layer"] : undefined;
+  if (src === "boundary") return true; // country / state / disputed border lines
+  if (src === "water_name") return true; // sea and ocean names, some of them disputed
+  return /^label_(country|state)/.test(layer.id);
+}
+
+/** Loads the street style and adds it, hidden, beneath `beforeId`. Returns its layer ids. */
+async function addStreetLayers(map: maplibregl.Map, beforeId: string): Promise<string[]> {
+  const res = await fetch(STREET_STYLE_URL);
+  if (!res.ok) throw new Error(`Street style ${res.status}`);
+  const style = (await res.json()) as maplibregl.StyleSpecification;
+  if (style.glyphs) map.setGlyphs(style.glyphs);
+  if (typeof style.sprite === "string") map.setSprite(style.sprite);
+  for (const [id, src] of Object.entries(style.sources)) if (!map.getSource(id)) map.addSource(id, src);
+  const ids: string[] = [];
+  for (const layer of style.layers) {
+    if (isPolitical(layer)) continue;
+    const l = { ...layer, id: STREET_PREFIX + layer.id } as maplibregl.LayerSpecification;
+    // Capitals get a star; drop it so no city is marked as anyone's capital.
+    if (layer.id === "label_city_capital" && l.type === "symbol") l.layout = { ...l.layout, "icon-image": "" };
+    l.layout = { ...l.layout, visibility: "none" };
+    map.addLayer(l, beforeId);
+    ids.push(l.id);
+  }
+  return ids;
+}
+
+/** Shows either the satellite layers or the street map. */
+function showBase(map: maplibregl.Map, satellite: boolean, satLayers: string[], streetIds: string[]) {
+  // Without the street map (still loading, or unreachable) stay on satellite.
+  const sat = satellite || !streetIds.length;
+  for (const id of ["sat-mapbox", "sat-esri", "roads"]) {
+    if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", sat && satLayers.includes(id) ? "visible" : "none");
+  }
+  for (const id of streetIds) map.setLayoutProperty(id, "visibility", sat ? "none" : "visible");
+}
 
 const SHAPES: [ShapeKind, string, typeof Square][] = [
   ["square", "Square", Square],
@@ -243,6 +281,10 @@ export function MapPicker({
   onShapeChangeRef.current = onShapeChange;
   const [ready, setReady] = useState(false);
   const [satellite, setSatellite] = useState(true);
+  const satelliteRef = useRef(satellite);
+  /** Visible satellite layers — switches to Esri if Mapbox refuses the token. */
+  const satLayersRef = useRef<string[]>(MAPBOX_TOKEN ? ["sat-mapbox", "roads"] : ["sat-esri", "roads"]);
+  const streetIdsRef = useRef<string[]>([]);
   const [grab, setGrab] = useState<Grab | null>(null);
   const grabRef = useRef<Grab | null>(null);
   grabRef.current = grab;
@@ -446,6 +488,17 @@ export function MapPicker({
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
 
+    // A Mapbox token that's invalid, out of scope or blocked on the account
+    // answers every tile with 401/403 — switch to Esri instead of a blank map.
+    map.on("error", (e) => {
+      const { error } = e as unknown as { error?: { status?: number; url?: string } };
+      if (!satLayersRef.current.includes("sat-mapbox") || !error?.url?.includes("api.mapbox.com")) return;
+      if (error.status !== 401 && error.status !== 403) return;
+      console.warn(`[MapPicker] Mapbox refused the token (${error.status}) — using Esri imagery`);
+      satLayersRef.current = ["sat-esri", "roads"];
+      showBase(map, satelliteRef.current, satLayersRef.current, streetIdsRef.current);
+    });
+
     const badge = document.createElement("div");
     badge.className =
       "pointer-events-none whitespace-nowrap rounded-full border border-white/20 bg-black/75 px-2.5 py-1 font-mono text-[10.5px] font-medium tracking-wide text-white shadow-lg backdrop-blur-md";
@@ -527,6 +580,14 @@ export function MapPicker({
         },
       });
       setReady(true);
+
+      addStreetLayers(map, "mask")
+        .then((ids) => {
+          if (mapRef.current !== map) return;
+          streetIdsRef.current = ids;
+          showBase(map, satelliteRef.current, satLayersRef.current, ids);
+        })
+        .catch((err) => console.warn("[MapPicker] street map unavailable", err));
     });
 
     // Handles keep a fixed screen distance from the frame, so redraw on zoom.
@@ -783,10 +844,10 @@ export function MapPicker({
   }, [locked, ready, fitFrame]);
 
   useEffect(() => {
+    satelliteRef.current = satellite;
     const map = mapRef.current;
     if (!map || !ready) return;
-    SAT_LAYERS.forEach((id) => map.setLayoutProperty(id, "visibility", satellite ? "visible" : "none"));
-    map.setLayoutProperty("streets", "visibility", satellite ? "none" : "visible");
+    showBase(map, satellite, satLayersRef.current, streetIdsRef.current);
   }, [satellite, ready]);
 
   /** Search result: the frame moves to the place and the camera follows. */

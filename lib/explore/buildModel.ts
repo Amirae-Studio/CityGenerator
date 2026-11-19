@@ -26,8 +26,9 @@ import type { Area, OsmBuilding, OsmData, Roof, RoofShape } from "./osm";
 import type { HeightSampler } from "./elevation";
 import type { MeshBuilding } from "./lod2";
 import type { TreeTemplate } from "./trees";
-import polygonClipping, { type MultiPolygon, type Pair, type Polygon } from "polygon-clipping";
-const { intersection, union } = polygonClipping;
+import polygonClipping, { type Pair } from "polygon-clipping";
+import * as ClipperLib from "clipper-lib";
+const { intersection } = polygonClipping;
 
 export type ExploreLayer =
   | "terrain"
@@ -297,205 +298,77 @@ function drapedArea(m: TriMesh, area: Area, ctx: Ctx, topOff: number, botOff: nu
   }
 }
 
-/* ── Ribbons: roads, rivers ──────────────────────────────────────────── */
-
-/** Pull a ribbon edge point back inside the frame along its cross-section. */
-function keepInside(p: Vec2, center: Vec2, clip: Vec2[]): Vec2 {
-  if (insideFrame(p, clip)) return p;
-  let lo = 0, hi = 1;
-  for (let i = 0; i < 10; i++) {
-    const t = (lo + hi) / 2;
-    const q: Vec2 = [center[0] + (p[0] - center[0]) * t, center[1] + (p[1] - center[1]) * t];
-    if (insideFrame(q, clip)) lo = t;
-    else hi = t;
-  }
-  return [center[0] + (p[0] - center[0]) * lo, center[1] + (p[1] - center[1]) * lo];
-}
-
-function ribbon(m: TriMesh, line: Vec2[], width: number, ctx: Ctx, topOff: number, botOff: number) {
-  const { H, clip } = ctx;
-  const pts = densify(line, ctx.drape, false).filter(
-    (p, i, arr) => i === 0 || Math.hypot(p[0] - arr[i - 1][0], p[1] - arr[i - 1][1]) > 1e-3
-  );
-  if (pts.length < 2) return;
-  const hw = width / 2;
-  const L: Vec2[] = [];
-  const R: Vec2[] = [];
-  for (let i = 0; i < pts.length; i++) {
-    const prev = pts[Math.max(0, i - 1)];
-    const next = pts[Math.min(pts.length - 1, i + 1)];
-    let tx = next[0] - prev[0], ty = next[1] - prev[1];
-    const tl = Math.hypot(tx, ty) || 1;
-    tx /= tl;
-    ty /= tl;
-    // Miter: widen at corners so the ribbon keeps its width, capped for hairpins.
-    let miter = 1;
-    if (i > 0 && i < pts.length - 1) {
-      const ax = pts[i][0] - prev[0], ay = pts[i][1] - prev[1];
-      const al = Math.hypot(ax, ay) || 1;
-      const cos = (ax / al) * tx + (ay / al) * ty;
-      miter = Math.min(2, 1 / Math.max(0.5, cos));
-    }
-    const nx = -ty * hw * miter, ny = tx * hw * miter;
-    L.push(keepInside([pts[i][0] + nx, pts[i][1] + ny], pts[i], clip));
-    R.push(keepInside([pts[i][0] - nx, pts[i][1] - ny], pts[i], clip));
-  }
-  const at = (p: Vec2, off: number) => P(p[0], p[1], H(p[0], p[1]) + off);
-  for (let i = 0; i < pts.length - 1; i++) {
-    const tx = pts[i + 1][0] - pts[i][0], ty = pts[i + 1][1] - pts[i][1];
-    m.quad(at(L[i], topOff), at(R[i], topOff), at(R[i + 1], topOff), at(L[i + 1], topOff), UP);
-    m.quad(at(L[i], botOff), at(R[i], botOff), at(R[i + 1], botOff), at(L[i + 1], botOff), DOWN);
-    m.quad(at(L[i], botOff), at(L[i + 1], botOff), at(L[i + 1], topOff), at(L[i], topOff), dir2(-ty, tx));
-    m.quad(at(R[i], botOff), at(R[i + 1], botOff), at(R[i + 1], topOff), at(R[i], topOff), dir2(ty, -tx));
-  }
-  // End caps face away from the neighbouring point.
-  const n = pts.length - 1;
-  for (const [i, j] of [[0, 1], [n, n - 1]]) {
-    const face = dir2(pts[i][0] - pts[j][0], pts[i][1] - pts[j][1]);
-    m.quad(at(L[i], botOff), at(R[i], botOff), at(R[i], topOff), at(L[i], topOff), face);
-  }
-}
-
 /* ── Merged outlines: roads, water ───────────────────────────────────────
    Separate ribbons overlap at every junction and stack into ragged, z-fighting
-   slabs. Instead each centre line is stroked to a 2D outline with round joins
-   and caps, everything is unioned into one clean outline, cut to the frame,
-   and laid as a single draped slab. */
+   slabs. Instead every centre line is stroked to a 2D outline with round joins
+   and caps, everything is merged into one clean outline cut to the frame, and
+   laid as a single draped slab.
+
+   This uses Clipper, which works in integer coordinates: a city's dense road
+   network has thousands of near-coincident edges, and float-based boolean
+   libraries regularly fail on them. */
+
+export type Outline = {
+  /** Centre lines stroked `width` metres wide. */
+  lines: { line: Vec2[]; width: number }[];
+  /** Filled areas (outer CCW, holes CW). */
+  areas: Area[];
+};
 
 /**
- * Coordinates are snapped to a grid of `q` metres (a few microns at print
- * size) so near-coincident edges don't trip up the boolean sweep.
+ * Strokes and merges `src`, cuts it to the frame and returns hole-aware areas
+ * (outer CCW, holes CW). Pieces and holes under `minArea` m² are dropped.
  */
-const snapper = (q: number) => (x: number, y: number): Pair => [Math.round(x / q) * q, Math.round(y / q) * q];
+function mergeToFrame(src: Outline, ctx: Ctx, minArea: number): Area[] {
+  // Integer grid: 0.005 mm at print size (at least 1 cm), far below a nozzle.
+  const q = Math.max(0.01, 0.005 * ctx.mpm);
+  const toPath = (pts: Vec2[]): ClipperLib.Path => pts.map(([x, y]) => ({ X: Math.round(x / q), Y: Math.round(y / q) }));
 
-/** Snap grid for a model: 0.005 mm at print size, at least 1 cm. */
-const snapStep = (mpm: number) => Math.max(0.01, 0.005 * mpm);
+  const subject: ClipperLib.Paths = [];
 
-function disc(c: Vec2, r: number, sides: number, pair: (x: number, y: number) => Pair): Polygon {
-  const ring: Pair[] = [];
-  for (let k = 0; k < sides; k++) {
-    const a = (k / sides) * Math.PI * 2;
-    ring.push(pair(c[0] + Math.cos(a) * r, c[1] + Math.sin(a) * r));
+  // One offset pass per stroke width (a city has only a handful of widths).
+  const byWidth = new Map<number, ClipperLib.Paths>();
+  for (const { line, width } of src.lines) {
+    const path = toPath(line).filter((p, i, a) => i === 0 || p.X !== a[i - 1].X || p.Y !== a[i - 1].Y);
+    if (path.length < 2) continue;
+    const w = Math.max(2, Math.round(width / q));
+    const list = byWidth.get(w);
+    if (list) list.push(path);
+    else byWidth.set(w, [path]);
   }
-  ring.push(ring[0]);
-  return [ring];
-}
-
-/** Outline of a centre line `width` wide: one quad per segment, a disc at each
- *  bend and at both ends so joins and caps come out round. */
-function strokeLine(line: Vec2[], width: number, q: number, out: Polygon[]) {
-  const pair = snapper(q);
-  const pts = line.filter((p, i) => i === 0 || Math.hypot(p[0] - line[i - 1][0], p[1] - line[i - 1][1]) > q * 2);
-  if (pts.length < 2) return;
-  const hw = width / 2;
-  const sides = hw < 3 ? 8 : 16;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const [ax, ay] = pts[i];
-    const [bx, by] = pts[i + 1];
-    const l = Math.hypot(bx - ax, by - ay);
-    const nx = (-(by - ay) / l) * hw, ny = ((bx - ax) / l) * hw;
-    const a1 = pair(ax + nx, ay + ny);
-    out.push([[a1, pair(ax - nx, ay - ny), pair(bx - nx, by - ny), pair(bx + nx, by + ny), a1]]);
+  // Round joins and caps, smooth to ~0.01 mm at print size.
+  const arcTolerance = Math.max(1, (0.01 * ctx.mpm) / q);
+  for (const [w, paths] of byWidth) {
+    const co = new ClipperLib.ClipperOffset(2, arcTolerance);
+    co.AddPaths(paths, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etOpenRound);
+    const out: ClipperLib.Paths = [];
+    co.Execute(out, w / 2);
+    subject.push(...out);
   }
-  for (let i = 0; i < pts.length; i++) {
-    if (i > 0 && i < pts.length - 1) {
-      // Skip near-straight joins — the quads already meet cleanly there.
-      const ax = pts[i][0] - pts[i - 1][0], ay = pts[i][1] - pts[i - 1][1];
-      const bx = pts[i + 1][0] - pts[i][0], by = pts[i + 1][1] - pts[i][1];
-      const cos = (ax * bx + ay * by) / ((Math.hypot(ax, ay) || 1) * (Math.hypot(bx, by) || 1));
-      if (cos > 0.996) continue;
-    }
-    out.push(disc(pts[i], hw, sides, pair));
+
+  for (const a of src.areas) {
+    subject.push(toPath(orient(a.outer, true)));
+    for (const h of a.holes) subject.push(toPath(orient(h, false)));
   }
-}
+  if (!subject.length) return [];
 
-function areaPolygon(a: Area, q: number): Polygon {
-  const pair = snapper(q);
-  const close = (r: Vec2[]): Pair[] => {
-    const ring = r.map((p) => pair(p[0], p[1]));
-    return [...ring, ring[0]];
-  };
-  return [close(a.outer), ...a.holes.map(close)];
-}
+  // Union of everything (non-zero fill) intersected with the frame, in one pass.
+  const c = new ClipperLib.Clipper();
+  c.AddPaths(subject, ClipperLib.PolyType.ptSubject, true);
+  c.AddPath(toPath(orient(ctx.clip, true)), ClipperLib.PolyType.ptClip, true);
+  const tree = new ClipperLib.PolyTree();
+  c.Execute(ClipperLib.ClipType.ctIntersection, tree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
 
-function toAreas(mp: MultiPolygon, minArea: number, out: Area[]) {
-  for (const poly of mp) {
-    const outer = poly[0].slice(0, -1) as Vec2[];
+  const fromPath = (p: ClipperLib.Path): Vec2[] => ClipperLib.Clipper.CleanPolygon(p, 1.5).map((v) => [v.X * q, v.Y * q]);
+  const out: Area[] = [];
+  for (const ex of ClipperLib.JS.PolyTreeToExPolygons(tree)) {
+    const outer = fromPath(ex.outer);
     if (outer.length < 3 || Math.abs(signedArea(outer)) < minArea) continue;
-    const holes = poly
-      .slice(1)
-      .map((h) => h.slice(0, -1) as Vec2[])
+    const holes = ex.holes
+      .map(fromPath)
       .filter((h) => h.length >= 3 && Math.abs(signedArea(h)) >= minArea)
       .map((h) => orient(h, false));
     out.push({ outer: orient(outer, true), holes });
-  }
-}
-
-/** Polygons per merge tile — the sweep gets slow and fragile well above this. */
-const TILE_POLYS = 1500;
-
-/**
- * Unions the shapes, cuts them to the frame and returns hole-aware areas
- * (outer CCW, holes CW). Specks smaller than `minArea` m² are dropped.
- *
- * Big areas are merged in a grid of tiles: each union stays small, which keeps
- * it fast and avoids the float failures the sweep hits on huge inputs. A tile
- * whose union still fails falls back to clipping its pieces one by one —
- * overlapping there, but still cut cleanly to the tile and frame.
- */
-function mergeToFrame(polys: Polygon[], ctx: Ctx, q: number, minArea: number): Area[] {
-  if (!polys.length) return [];
-  const pair = snapper(q);
-  const frame: Pair[] = ctx.clip.map((p) => pair(p[0], p[1]));
-  frame.push(frame[0]);
-
-  const b = bounds(ctx.clip);
-  const n = Math.min(8, Math.max(1, Math.ceil(Math.sqrt(polys.length / TILE_POLYS))));
-  const tw = (b.maxX - b.minX) / n, th = (b.maxY - b.minY) / n;
-  const buckets: Polygon[][] = Array.from({ length: n * n }, () => []);
-  for (const poly of polys) {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const [x, y] of poly[0]) {
-      if (x < x0) x0 = x;
-      if (x > x1) x1 = x;
-      if (y < y0) y0 = y;
-      if (y > y1) y1 = y;
-    }
-    const i0 = Math.max(0, Math.floor((x0 - b.minX) / tw)), i1 = Math.min(n - 1, Math.floor((x1 - b.minX) / tw));
-    const j0 = Math.max(0, Math.floor((y0 - b.minY) / th)), j1 = Math.min(n - 1, Math.floor((y1 - b.minY) / th));
-    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) buckets[j * n + i].push(poly);
-  }
-
-  const out: Area[] = [];
-  for (let j = 0; j < n; j++) {
-    for (let i = 0; i < n; i++) {
-      const list = buckets[j * n + i];
-      if (!list.length) continue;
-      // Tile edges on the snap grid, so neighbouring tiles meet exactly.
-      const xa = b.minX + i * tw, xb = i === n - 1 ? b.maxX : xa + tw;
-      const ya = b.minY + j * th, yb = j === n - 1 ? b.maxY : ya + th;
-      const tile: Pair[] = [pair(xa, ya), pair(xb, ya), pair(xb, yb), pair(xa, yb)];
-      tile.push(tile[0]);
-      let region: MultiPolygon;
-      try {
-        region = n === 1 ? [[frame]] : intersection([tile], [frame]);
-      } catch {
-        continue;
-      }
-      if (!region.length) continue;
-      try {
-        toAreas(intersection(union(list[0], ...list.slice(1)), region), minArea, out);
-      } catch (err) {
-        console.warn("[buildModel] outline merge failed in one tile, clipping pieces separately", err);
-        for (const poly of list) {
-          try {
-            toAreas(intersection(poly, region), minArea, out);
-          } catch {
-            /* a single sliver — skip it */
-          }
-        }
-      }
-    }
   }
   return out;
 }
@@ -1147,10 +1020,11 @@ export async function buildExploreModel(
   roads.anchor = (v) => [v[0], ctx.H(v[0], -v[2]), v[2]];
   const minRoad = 0.7 * mpm;
   const speck = (0.4 * mpm) ** 2; // anything under ~0.4 mm across won't print
-  const q = snapStep(mpm);
-  const roadPolys: Polygon[] = [];
-  for (const r of data.roads) strokeLine(r.line, Math.max(r.width, minRoad), q, roadPolys);
-  for (const a of mergeToFrame(roadPolys, ctx, q, speck)) drapedArea(roads, a, ctx, 0.45 * mpm, -0.4 * mpm);
+  const roadOutline: Outline = {
+    lines: data.roads.map((r) => ({ line: r.line, width: Math.max(r.width, minRoad) })),
+    areas: [],
+  };
+  for (const a of mergeToFrame(roadOutline, ctx, speck)) drapedArea(roads, a, ctx, 0.45 * mpm, -0.4 * mpm);
   layers.push({ key: "roads", geom: roads.geometry() });
 
   onProgress?.("Planting greenery");
@@ -1165,9 +1039,11 @@ export async function buildExploreModel(
   await tick();
   const water = new TriMesh();
   water.anchor = (v) => [v[0], ctx.H(v[0], -v[2]), v[2]];
-  const waterPolys: Polygon[] = data.water.map((a) => areaPolygon(a, q));
-  for (const l of data.waterLines) strokeLine(l.line, Math.max(l.width, minRoad), q, waterPolys);
-  for (const a of mergeToFrame(waterPolys, ctx, q, speck)) drapedArea(water, a, ctx, 0.35 * mpm, -0.5 * mpm);
+  const waterOutline: Outline = {
+    lines: data.waterLines.map((l) => ({ line: l.line, width: Math.max(l.width, minRoad) })),
+    areas: data.water,
+  };
+  for (const a of mergeToFrame(waterOutline, ctx, speck)) drapedArea(water, a, ctx, 0.35 * mpm, -0.5 * mpm);
   layers.push({ key: "water", geom: water.geometry() });
 
   onProgress?.("Packing layers");

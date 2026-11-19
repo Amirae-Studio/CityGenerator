@@ -1,5 +1,3 @@
-"use client";
-
 import { useMemo, type ReactNode } from "react";
 import { Check, Download, Loader2, TriangleAlert } from "lucide-react";
 import Scrubber from "../ui/Scrubber";
@@ -476,7 +474,6 @@ function TextureSwatch({ t }: { t: FrameTexture }) {
     return c.toDataURL();
   }, [t]);
   return (
-    // eslint-disable-next-line @next/next/no-img-element
     <img src={url || undefined} alt="" className="h-9 w-full rounded-md object-cover" />
   );
 }
