@@ -25,10 +25,9 @@ const ThemeContext = createContext<ThemeState | null>(null);
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [accent, setAccentState] = useState<Accent>(accents[0]);
   const [showPrices, setShowPrices] = useState(true);
-  // Start at the SSR default so the first client render matches the server;
-  // the real value (already applied to <html> by the no-flash script) is read
-  // in an effect below. This avoids a hydration mismatch on the toggle icon.
-  const [mode, setModeState] = useState<Mode>("dark");
+  // Light is the default; the no-flash script in src/theme-init.ts has
+  // already applied the saved choice to <html>, which is read below.
+  const [mode, setModeState] = useState<Mode>("light");
   const [hydrated, setHydrated] = useState(false);
 
   const setAccent = useCallback((a: Accent) => setAccentState(a), []);
@@ -39,13 +38,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     []
   );
 
-  // Push the accent into CSS custom properties so plain CSS + arbitrary
-  // Tailwind values (var(--accent)) react to the control.
-  useEffect(() => {
-    const root = document.documentElement;
-    root.style.setProperty("--accent", accent.value);
-    root.style.setProperty("--accent-rgb", accent.rgb);
-  }, [accent]);
+  // The accent colour itself lives in CSS (per light/dark theme, see
+  // src/globals.css), so it is not pushed onto <html> from here.
 
   // Adopt whatever the no-flash <head> script already resolved onto <html>.
   useEffect(() => {
@@ -60,7 +54,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     if (!hydrated) return;
     document.documentElement.setAttribute("data-theme", mode);
     try {
-      localStorage.setItem("fc-theme", mode);
+      localStorage.setItem("cg-theme", mode);
     } catch {
       /* ignore */
     }

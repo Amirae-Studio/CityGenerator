@@ -4,11 +4,11 @@
   "capabilities": ["export", "toast", "requestAccess"],
   "csp": {
     "script-src": "'self' 'wasm-unsafe-eval'",
-    "style-src": "'self' 'unsafe-inline'",
-    "img-src": "'self' data: blob: https://server.arcgisonline.com https://api.mapbox.com https://tiles.openfreemap.org https://s3.amazonaws.com",
+    "style-src": "'self'",
+    "img-src": "'self' data: blob: https://api.mapbox.com https://s3.amazonaws.com",
     "font-src": "'self' data:",
     "worker-src": "'self' blob:",
-    "connect-src": "'self' blob: data: https://overpass-api.de https://overpass.private.coffee https://maps.mail.ru https://photon.komoot.io https://api.mapbox.com https://server.arcgisonline.com https://tiles.openfreemap.org https://s3.amazonaws.com https://stac.overturemaps.org https://tiles.overturemaps.org https://api.plateau.reearth.io https://assets.cms.plateau.reearth.io https://mreversegeocoder.gsi.go.jp https://data.3dbag.nl https://3d.geo.admin.ch"
+    "connect-src": "'self' blob: data: https://overpass-api.de https://overpass.private.coffee https://maps.mail.ru https://photon.komoot.io https://api.mapbox.com https://events.mapbox.com https://*.tiles.mapbox.com https://tiles.openfreemap.org https://s3.amazonaws.com https://stac.overturemaps.org https://tiles.overturemaps.org https://api.plateau.reearth.io https://assets.cms.plateau.reearth.io https://mreversegeocoder.gsi.go.jp https://data.3dbag.nl https://3d.geo.admin.ch"
   },
   "sandboxOverrides": {
     "allowScripts": true,

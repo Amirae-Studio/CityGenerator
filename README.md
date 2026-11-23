@@ -66,28 +66,105 @@ What the MakerLab integration does (`lib/makerlab/`):
 
 ## Release
 
+Production URL: `https://city-generator.mwapps.com` (MakerLab serves each App
+from `https://${appId}.mwapps.com`, under a versioned path that changes every
+release).
+
 ```bash
 npm run build
+npm run preview:release
 ```
 
-Output in `dist/` (~7 MB, relative paths, no inline scripts). Publish on the
-Generator Management Platform with the settings in
-`makerlab/config.production.json` (CSP without `'unsafe-inline'` in
-`script-src`). `'wasm-unsafe-eval'` is requested only for the DRACO/meshopt
-decoders used by LOD2 buildings; MakerLab decides on it at review.
+`preview:release` serves `dist/` the way MakerLab does: from a versioned path
+(`http://localhost:4175/v1/`) and with the exact CSP from
+`makerlab/config.production.json`. The terminal prints every CSP violation
+(`[CSP blocked] …`) and every request outside the versioned path, which
+means an absolute `/…` path. Walk through map → scan → generate → Studio →
+frame and check that it prints nothing. `-- --strict` additionally drops
+`'unsafe-inline'` from `style-src` (it's already absent in production).
+
+Output in `dist/` (~7.4 MB, under MakerLab's 10 MB guidance; `sdk.init` gets a
+20 s timeout). `npm run package` builds and writes `dist.zip` with
+`index.html` at the ZIP root, as MakerLab requires (not inside a `dist/`
+folder). Publish it on the Generator Management Platform, and paste the CSP
+from `makerlab/config.production.json` into the version's custom CSP field as
+one line (`directive value; directive value; …`). The CSP belongs to the
+published version, so set it before publishing; if the map fails, the alert
+lists the CSP the host actually served.
+
+**Pre-release checklist** (status as of this version):
+
+- [x] `base: "./"` in `vite.config.ts`; no `/…` asset paths in `dist/`. The
+  Mapbox worker is resolved via `import.meta.url`.
+- [x] `script-src 'self' 'wasm-unsafe-eval'`: no `'unsafe-inline'` or
+  `'unsafe-eval'`. `'wasm-unsafe-eval'` is needed by Mapbox GL JS (3D
+  landmark/model decoding, right-to-left text) and by the DRACO/meshopt
+  decoders for LOD2 buildings; tell MakerLab at review.
+- [x] `style-src 'self'`, without `'unsafe-inline'`: the app sets styles only
+  through the DOM, never inline `<style>`/`style="…"`; verified with
+  `preview:release`.
+- [x] `connect-src` lists every runtime host: Mapbox (`api`, `events`,
+  `*.tiles`), Photon, OpenFreeMap, Overture, Overpass mirrors, AWS elevation,
+  3DBAG, swisstopo, PLATEAU (+ GSI geocoder).
+- [x] `sandboxOverrides`: scripts + same-origin only (module scripts and
+  workers need same-origin; exports go through `sdk.export`, so no downloads).
+- [x] `capabilities`: `export`, `toast`, `requestAccess`: all the app uses.
+- [ ] SDK is the latest from the developer kit: compare `lib/makerlab/sdk/`
+  with the kit's `lib/index.js` / `lib/index.d.ts` before each release.
+- [ ] Walk through export, toasts and the commercial-licence payment in the
+  kit's local host (see "Inside MakerLab").
+- [ ] Mapbox token: add `https://city-generator.mwapps.com` to its URL
+  restrictions, then check the map in MakerLab's online preview.
+
+"Use my location" hides itself if the iframe isn't allowed geolocation.
 
 Send MakerLab the commercial license details (key `commercial_eeee`, name,
-description, price) — see Paid Features › Step 1.
+description, price). See Paid Features › Step 1.
+
+## Map setup (required)
+
+The map is **Mapbox GL JS** drawing **Mapbox Standard**, the same engine and
+data Mapbox Studio uses: small map-data tiles drawn in the browser, 3D
+buildings included. Street map: your Mapbox Studio style built on Standard
+(or plain `mapbox/standard`). Satellite: `mapbox/standard-satellite`. Place
+search uses Photon (free, no key).
+
+The map must stay neutral: **no country/state borders and no country, state
+or sea names**. The app enforces this itself through Standard's switches,
+whatever the Studio style says: borders are always off, and place names only
+appear from zoom 10 in (city level), where there are no country, state or sea
+names. See `neutralConfig` in `components/explore/MapPicker.tsx`.
+
+1. **Token.** In your Mapbox account, create a public token (starts with
+   `pk.`). Under URL restrictions, add your live site's URL and
+   `http://localhost:5174` for local work. The account needs a payment method
+   on file: without one, Mapbox limits it to a trial allowance.
+2. **Street style (optional).** In Mapbox Studio, style a map built on
+   **Standard** (colours, light preset, font…) and publish it. Copy its URL,
+   e.g. `mapbox://styles/yourname/abc123`. Without one the app uses plain
+   Standard.
+3. **Satellite style (optional).** Same, built on Standard Satellite.
+4. **`.env`** (copy `.env.example`):
+
+   ```
+   NEXT_PUBLIC_MAPBOX_TOKEN=pk....
+   NEXT_PUBLIC_MAPBOX_STREET_STYLE=mapbox://styles/yourname/abc123
+   NEXT_PUBLIC_MAPBOX_SATELLITE_STYLE=mapbox://styles/yourname/def456
+   ```
+
+   Restart `npm run dev` after editing `.env`. For a release build, the same
+   variables must be set when running `npm run build`.
+
+If the token is missing or Mapbox refuses a request (bad token, wrong style
+ID), the map shows a message instead of going blank.
+
+**Cost.** Mapbox GL JS is billed per **map load** (each time the map opens;
+panning and zooming are free): 50,000 a month free, then from $5 per 1,000
+(check mapbox.com/pricing). Switching street ↔ satellite reloads the style
+but is the same map, not a new load.
 
 ## Optional setup
 
-- `NEXT_PUBLIC_MAPBOX_TOKEN` in `.env`: Mapbox satellite tiles and search.
-  Unset → free Esri imagery and Photon search. If Mapbox refuses the token
-  (401/403) the map switches to Esri by itself.
 - Tree styles (Classic, Leafy, Grand) are built in code. To use your own
   models, put `tree1.stl` … `tree3.stl` in `public/trees/` and set
   `USE_STL_FILES = true` in `lib/explore/trees.ts`.
-
-The map display is kept neutral: imagery has no labels, the street map
-(OpenFreeMap) has no border lines, country/state names or sea names, and
-capitals aren't marked.

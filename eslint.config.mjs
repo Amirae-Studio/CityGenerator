@@ -3,7 +3,7 @@ import tseslint from "typescript-eslint";
 import reactHooks from "eslint-plugin-react-hooks";
 
 export default tseslint.config(
-  { ignores: ["dist/**", "node_modules/**", "public/**", ".next/**", "lib/makerlab/sdk/**"] },
+  { ignores: ["dist/**", "node_modules/**", "public/**", ".next/**", ".claude/**", "lib/makerlab/sdk/**"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -16,6 +16,13 @@ export default tseslint.config(
       // Leftovers in code carried over from frameCity; keep them visible, not blocking.
       "@typescript-eslint/no-unused-vars": "warn",
       "prefer-const": "warn",
+    },
+  },
+  {
+    // Node tooling scripts (e.g. the release preview server).
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: { process: "readonly", console: "readonly", URL: "readonly", Buffer: "readonly" },
     },
   }
 );

@@ -3,68 +3,114 @@
 @source "../lib";
 
 @theme {
-  /* Surfaces (dark defaults — overridden at runtime by [data-theme="light"]) */
-  --color-base: #000000;
-  --color-panel: #0a0a0a;
-  --color-panel-2: #121212;
-  --color-deep: #000000;
-  --color-marquee: #050505;
+  /* Surfaces (light defaults — overridden at runtime by [data-theme="dark"]) */
+  --color-base: #ffffff;
+  --color-panel: #ffffff;
+  --color-panel-2: #f3f6f4;
+  --color-deep: #ffffff;
+  --color-marquee: #f3f6f4;
 
-  /* Ink — the primary foreground. Light on dark here, dark on light in light mode. */
-  --color-cream: #ffffff;
+  /* Ink — the primary foreground. Dark on light here, light on dark in dark mode.
+     (Named "cream" for history; it is simply the text colour.) */
+  --color-cream: #15201a;
 
   /* Fonts (self-hosted via @fontsource, imported in src/main.tsx) */
-  --font-display: "Cormorant Garamond", Georgia, serif;
+  --font-display: "Instrument Sans", system-ui, sans-serif;
   --font-body: "Instrument Sans", system-ui, sans-serif;
   --font-mono: "Space Mono", ui-monospace, monospace;
   --font-gothic: cursive;
 }
 
+/* ---------------------------------------------------------------- LIGHT MODE (default) */
 :root {
-  /* Live accent — swappable at runtime via the theme control */
-  --accent: #e5b229;
-  --accent-rgb: 229, 178, 41;
-  --accent-text: #e5b229;
+  /* Green accent. --accent fills rings, sliders and labels; --accent-strong is
+     the primary button fill (white text on it stays readable); --accent-soft
+     tints selected options and info boxes. */
+  --accent: #1fa463;
+  --accent-rgb: 31, 164, 99;
+  --accent-strong: #17925a;
+  --accent-strong-hover: #127c4b;
+  --accent-text: #137a48;
+  --accent-soft: #e9f7ef;
 
   /* rgb of the ink token, for inline rgba() borders/overlays */
-  --ink-rgb: 242, 239, 233;
+  --ink-rgb: 21, 32, 26;
 
   /* Themed decorative gradients */
-  --grad-warm-a: #16130d;
-  --grad-warm-b: #0e0d0c;
-  --map-a: #17150f;
-  --map-b: #151309;
-  --stripe-a: #1a1811;
-  --stripe-b: #151309;
+  --grad-warm-a: #f3faf6;
+  --grad-warm-b: #ffffff;
+  --map-a: #eef3f0;
+  --map-b: #e2e9e5;
+  --stripe-a: #eef3f0;
+  --stripe-b: #e4ebe7;
 
-  /* Line-art logos are near-white strokes; leave them as-is on dark. */
+  --panel-shadow: 0 12px 40px rgba(16, 40, 28, 0.12), 0 1px 3px rgba(16, 40, 28, 0.06);
+
+  /* Line-art logos are near-white strokes — invert them on light surfaces. */
+  --logo-filter: invert(1) brightness(0.82) contrast(1.05);
+
+  color-scheme: light;
+}
+
+/* ---------------------------------------------------------------- DARK MODE (optional) */
+:root[data-theme="dark"] {
+  --color-base: #0b100d;
+  --color-panel: #121915;
+  --color-panel-2: #19221d;
+  --color-deep: #0b100d;
+  --color-marquee: #0f1511;
+
+  --color-cream: #eef4f0; /* ink flips light */
+  --ink-rgb: 238, 244, 240;
+
+  --accent: #4cce8a;
+  --accent-rgb: 76, 206, 138;
+  --accent-strong: #1fa463;
+  --accent-strong-hover: #23b36d;
+  --accent-text: #6fdca2;
+  --accent-soft: rgba(76, 206, 138, 0.12);
+
+  --grad-warm-a: #121915;
+  --grad-warm-b: #0b100d;
+  --map-a: #141b17;
+  --map-b: #101612;
+  --stripe-a: #161e19;
+  --stripe-b: #111713;
+
+  --panel-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+
   --logo-filter: none;
 
   color-scheme: dark;
 }
 
-/* ---------------------------------------------------------------- LIGHT MODE */
-:root[data-theme="light"] {
-  --color-base: #f4f1ea;
-  --color-panel: #ffffff;
-  --color-panel-2: #efe9dc;
-  --color-deep: #ece7dd;
-  --color-marquee: #ece7dd;
+/* Shared building blocks. Kept in the components layer so Tailwind
+   utilities (hover:, focus-within:, …) can still override them. */
+@layer components {
+/* Primary call-to-action: solid green with white text */
+.btn-primary {
+  background: var(--accent-strong);
+  color: #ffffff;
+  font-weight: 500;
+  transition: background-color 0.2s ease, transform 0.2s ease;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-strong-hover);
+}
 
-  --color-cream: #1c1813; /* ink flips dark */
-  --ink-rgb: 28, 24, 19;
+/* Selected option in a segmented control / option card */
+.seg-on {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.45);
+}
 
-  --grad-warm-a: #f6f0e3;
-  --grad-warm-b: #f4f1ea;
-  --map-a: #e8e2d5;
-  --map-b: #ded7c7;
-  --stripe-a: #e7e1d4;
-  --stripe-b: #ddd5c5;
-
-  /* Invert the white line-art logos so they read on light surfaces. */
-  --logo-filter: invert(1) brightness(0.82) contrast(1.05);
-
-  color-scheme: light;
+/* Floating panels and controls over the map / 3D view */
+.float-panel {
+  background: var(--color-panel);
+  border: 1px solid rgba(var(--ink-rgb), 0.1);
+  box-shadow: var(--panel-shadow);
+}
 }
 
 * {
@@ -88,48 +134,6 @@ body {
 /* Line-art logo images flip in light mode */
 .theme-logo {
   filter: var(--logo-filter);
-}
-
-/* Panels that sit over dark photography / the 3D viewer keep light ink in
-   both themes — pin the ink token locally so inner text/borders stay light. */
-.on-media {
-  --color-cream: #ffffff;
-  --ink-rgb: 242, 239, 233;
-}
-
-/* Regions that stay fully dark in both themes (e.g. the hero, whose moody
-   photo only reads emerging from darkness). Pins the whole dark palette
-   locally so scrim, ink and buttons all render as in dark mode. */
-.force-dark {
-  --color-base: #000000;
-  --color-panel: #0a0a0a;
-  --color-panel-2: #121212;
-  --color-deep: #000000;
-  --color-marquee: #050505;
-  --color-cream: #ffff;
-  --ink-rgb: 242, 239, 233;
-  --logo-filter: none;
-}
-
-/* Hero legibility scrim — fades the page background into the photo, per theme */
-.hero-scrim {
-  background: linear-gradient(
-    180deg,
-    var(--color-base) 0%,
-    color-mix(in srgb, var(--color-base) 40%, transparent) 60%,
-    color-mix(in srgb, var(--color-base) 85%, transparent) 100%
-  );
-}
-@media (min-width: 768px) {
-  .hero-scrim {
-    background: linear-gradient(
-      90deg,
-      var(--color-base) 0%,
-      var(--color-base) 40%,
-      color-mix(in srgb, var(--color-base) 72%, transparent) 60%,
-      transparent 82%
-    );
-  }
 }
 
 /* Configurator section warm radial */
@@ -159,10 +163,10 @@ body {
 
 /* Studio viewport backdrop — theme-aware (canvas is transparent over it) */
 .studio-viewport {
-  background: radial-gradient(120% 120% at 50% 10%, #161310 0%, #0b0a09 72%);
+  background: radial-gradient(120% 120% at 50% 10%, #ffffff 0%, #e9efeb 74%);
 }
-:root[data-theme="light"] .studio-viewport {
-  background: radial-gradient(120% 120% at 50% 10%, #f7f3ea 0%, #e6ded0 74%);
+:root[data-theme="dark"] .studio-viewport {
+  background: radial-gradient(120% 120% at 50% 10%, #161d19 0%, #090c0a 72%);
 }
 
 /* Studio sliders — accent fill driven by --p (percent) set inline */
@@ -245,58 +249,6 @@ body {
 }
 
 ::selection {
-  background: var(--accent);
-  color: var(--color-base);
+  background: rgba(var(--accent-rgb), 0.3);
+  color: var(--color-cream);
 }
-
-.font-gothic {
-
-}
-
-/* Heretic / Gold display styling */
-.gold-display-text {
-  color: #e5b229;
-  background: linear-gradient(180deg, #fce077 0%, #e5b229 40%, #c99318 85%, #9b6c08 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  filter: drop-shadow(0 4px 24px rgba(229, 178, 41, 0.2));
-}
-
-.gold-accent {
-  color: #e5b229;
-}
-
-/* ── Patron Custom Model Button ── */
-@keyframes patron-glow-pulse {
-  0%, 100% {
-    box-shadow:
-      0 0 0 1px rgba(var(--accent-rgb), 0.15),
-      0 0 28px rgba(var(--accent-rgb), 0.18),
-      inset 0 1px 0 rgba(255,255,255,0.06);
-  }
-  50% {
-    box-shadow:
-      0 0 0 1px rgba(var(--accent-rgb), 0.35),
-      0 0 42px rgba(var(--accent-rgb), 0.30),
-      0 0 80px rgba(var(--accent-rgb), 0.08),
-      inset 0 1px 0 rgba(255,255,255,0.09);
-  }
-}
-
-.patron-custom-btn {
-  animation: patron-glow-pulse 3s ease-in-out infinite;
-  text-decoration: none;
-  display: flex;
-}
-
-.patron-custom-btn:hover {
-  animation: none;
-  box-shadow:
-    0 0 0 1px rgba(var(--accent-rgb), 0.5),
-    0 0 50px rgba(var(--accent-rgb), 0.35),
-    0 0 100px rgba(var(--accent-rgb), 0.12),
-    inset 0 1px 0 rgba(255,255,255,0.1) !important;
-  transform: translateY(-1px);
-  transition: box-shadow 0.2s ease, transform 0.2s ease;
-}
-

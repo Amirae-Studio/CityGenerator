@@ -4,8 +4,32 @@
     {
       "name": "citygen",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "--port", "5174", "--strictPort"],
+      "runtimeArgs": [
+        "vite",
+        "--port",
+        "5174",
+        "--strictPort"
+      ],
       "port": 5174
+    },
+    {
+      "name": "citygen-release",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "scripts/preview-release.mjs"
+      ],
+      "port": 4175
+    },
+    {
+      "name": "citygen-release-strict",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "scripts/preview-release.mjs",
+        "--strict",
+        "--port",
+        "4176"
+      ],
+      "port": 4176
     }
   ]
 }

@@ -20,7 +20,7 @@ export function TerrainModePicker({ value, onChange }: { value: TerrainChoice; o
             title={hint}
             onClick={() => onChange({ mode })}
             className={`flex flex-col items-center rounded-lg px-2 py-1.5 text-[12px] transition-colors ${
-              on ? "bg-cream font-medium text-[var(--color-base)]" : "text-cream/60 hover:text-cream"
+              on ? "seg-on font-medium" : "text-cream/60 hover:text-cream"
             }`}
           >
             {label}

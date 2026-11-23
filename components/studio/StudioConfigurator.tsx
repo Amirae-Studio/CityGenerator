@@ -13,6 +13,8 @@ import {
 } from "@/lib/studio";
 import { useTheme } from "@/lib/theme";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { BackButton } from "@/components/ui/BackButton";
+import { StepPills } from "@/components/StepPills";
 import type { ModelFile } from "@/lib/types";
 import type { GizmoMode } from "./StudioScene";
 import { exportTo3MF, collectTransformedMeshes, type ExtraPlate } from "@/lib/3mfExporter";
@@ -553,11 +555,10 @@ export function StudioConfigurator({
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.92, opacity: 0, y: 20 }}
               transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
-              className="w-full max-w-[600px] max-h-[88vh] overflow-y-auto rounded-2xl border border-cream/[0.16] shadow-[0_32px_80px_rgba(0,0,0,0.6)]"
-              style={{ background: "#0e1412" }}
+              className="w-full max-w-[600px] max-h-[88vh] overflow-y-auto rounded-2xl border border-cream/[0.12] bg-panel shadow-[var(--panel-shadow)]"
             >
               {/* Modal Header */}
-              <div className="sticky top-0 z-10 flex items-center justify-between border-b border-cream/[0.09] px-6 py-4" style={{ background: "#0e1412" }}>
+              <div className="sticky top-0 z-10 flex items-center justify-between border-b border-cream/[0.09] px-6 py-4 bg-panel">
                 <div className="flex items-center gap-3">
                   <div className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ background: "var(--accent)" }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -567,13 +568,13 @@ export function StudioConfigurator({
                   </div>
                   <div>
                     <div className="font-mono text-[9px] font-bold uppercase tracking-[0.3em]" style={{ color: "var(--accent)" }}>Learn More</div>
-                    <h2 className="m-0 font-display text-[20px] font-medium text-[#fff]">What is the Revit Base Frame?</h2>
+                    <h2 className="m-0 font-display text-[20px] font-medium text-cream">What is the Revit Base Frame?</h2>
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={() => setRevitInfoModal(false)}
-                  className="flex h-8 w-8 items-center justify-center rounded-xl text-[#fff]/40 transition-colors hover:bg-cream/10 hover:text-[#fff]/40 text-[16px]"
+                  className="flex h-8 w-8 items-center justify-center rounded-xl text-cream/40 transition-colors hover:bg-cream/10 hover:text-cream text-[16px]"
                 >
                   ✕
                 </button>
@@ -595,7 +596,7 @@ export function StudioConfigurator({
                 {/* Section 1 */}
                 <div className="flex flex-col gap-2">
                   <div className="font-mono text-[10px] font-bold uppercase tracking-[0.24em]" style={{ color: "var(--accent)" }}>What it is</div>
-                  <p className="m-0 text-[13.5px] leading-[1.7] text-[#ffff]">
+                  <p className="m-0 text-[13.5px] leading-[1.7] text-cream/80">
                     A flat, rigid rectangular plate generated directly beneath your city model. It serves as a structural mounting board and provides a seamless contact layer, making it much easier to securely anchor and attach your exported Revit geometry to the base.
                   </p>
                 </div>
@@ -616,7 +617,7 @@ export function StudioConfigurator({
                     ].map((s) => (
                       <li key={s.step} className="flex items-start gap-3">
                         <span className="mt-[1px] shrink-0 font-mono text-[10px] font-bold" style={{ color: "var(--accent)" }}>{s.step}</span>
-                        <span className="text-[12.5px] leading-[1.6] text-[#ffff]">{s.text}</span>
+                        <span className="text-[12.5px] leading-[1.6] text-cream/80">{s.text}</span>
                       </li>
                     ))}
                   </ol>
@@ -626,8 +627,7 @@ export function StudioConfigurator({
                 <button
                   type="button"
                   onClick={() => setRevitInfoModal(false)}
-                  className="w-full rounded-full py-3 text-[13px] font-medium text-[var(--color-base)] transition-transform hover:scale-[1.02]"
-                  style={{ background: "var(--accent)" }}
+                  className="w-full rounded-full btn-primary py-3 text-[13px] transition-transform hover:scale-[1.02]"
                 >
                   Got it — back to settings
                 </button>
@@ -638,34 +638,21 @@ export function StudioConfigurator({
       </AnimatePresence>
 
       {/* Header */}
-      <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-cream/[0.09] bg-deep/70 px-4 backdrop-blur-xl md:px-6">
+      <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-cream/[0.08] bg-deep px-4 md:px-6">
         {/* Shrinks (and clips) before the action buttons do, so the title
             never runs under them in a narrow MakerLab iframe. */}
-        <div className="flex min-w-0 flex-1 items-center gap-4 overflow-hidden">
-          {onBack && (
-            <button
-              type="button"
-              onClick={onBack}
-              className="flex shrink-0 items-center gap-2 rounded-full border border-cream/[0.16] px-4 py-2 text-[12.5px] text-cream/70 transition-colors hover:border-cream/40 hover:text-cream"
-            >
-              <span aria-hidden>←</span>
-              <span className="hidden sm:inline">Map</span>
-            </button>
-          )}
+        <div className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden">
+          {onBack && <BackButton onClick={onBack} />}
           <div className="min-w-0 overflow-hidden">
-            <div
-              className="font-mono text-[9px] font-bold uppercase tracking-[0.3em]"
-              style={{ color: "var(--accent)" }}
-            >
-              The Studio
+            <div className="whitespace-nowrap text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--accent-text)]">
+              City Generator
             </div>
-            <h1 className="m-0 truncate font-display text-[19px] font-medium leading-tight">
-              {city.name} · {location.name}
-            </h1>
+            <h1 className="m-0 truncate font-display text-[17px] font-semibold leading-tight">{location.name}</h1>
           </div>
         </div>
 
         <div className="flex shrink-0 items-center gap-3">
+          {onBack && <StepPills step={2} />}
           <CommercialLicenseButton />
           <ThemeToggle />
           <button
@@ -684,7 +671,7 @@ export function StudioConfigurator({
             <button
               onClick={() => downloadModel("3mf")}
               disabled={exportingAs !== null}
-              className="group flex items-center gap-2 rounded-full bg-cream px-5 py-[10px] text-[13px] text-[var(--color-base)] transition-transform duration-300 hover:scale-[1.03] disabled:opacity-50"
+              className="group flex items-center gap-2 rounded-full btn-primary px-5 py-[10px] text-[13px] transition-transform duration-300 hover:scale-[1.03] disabled:opacity-50"
               title="Download as 3MF — keeps layers separate for multi-color printing"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -776,7 +763,7 @@ export function StudioConfigurator({
                   onClick={() => setActiveTab(active ? null : item.id)}
                   className={`group relative flex h-11 w-11 items-center justify-center rounded-xl transition-all duration-200 ${
                     active
-                      ? "bg-cream text-[var(--color-base)] shadow-md scale-105"
+                      ? "seg-on scale-105"
                       : "text-cream/65 hover:bg-cream/10 hover:text-cream"
                   }`}
                 >
@@ -1012,7 +999,7 @@ export function StudioConfigurator({
   onClick={() => setCtl("hideRoads", !cityCtl.hideRoads)}
   className={`flex items-center justify-center gap-1.5 rounded-lg py-2 px-1 text-center font-mono text-[10.5px] font-bold uppercase tracking-wider transition-all duration-200 truncate ${
     cityCtl.hideRoads
-      ? "bg-cream text-[var(--color-base)] shadow-md scale-[1.01]"
+      ? "seg-on"
       : "text-cream/65 hover:text-cream hover:bg-cream/[0.06]"
   }`}
 >
@@ -1026,7 +1013,7 @@ export function StudioConfigurator({
   onClick={() => setCtl("hideTrees", !cityCtl.hideTrees)}
   className={`flex items-center justify-center gap-1.5 rounded-lg py-2 px-1 text-center font-mono text-[10.5px] font-bold uppercase tracking-wider transition-all duration-200 truncate ${
     cityCtl.hideTrees
-      ? "bg-cream text-[var(--color-base)] shadow-md scale-[1.01]"
+      ? "seg-on"
       : "text-cream/65 hover:text-cream hover:bg-cream/[0.06]"
   }`}
 >
@@ -1040,7 +1027,7 @@ export function StudioConfigurator({
   onClick={() => setCtl("hideGrass", !cityCtl.hideGrass)}
   className={`flex items-center justify-center gap-1.5 rounded-lg py-2 px-1 text-center font-mono text-[10.5px] font-bold uppercase tracking-wider transition-all duration-200 truncate ${
     cityCtl.hideGrass
-      ? "bg-cream text-[var(--color-base)] shadow-md scale-[1.01]"
+      ? "seg-on"
                                     : "text-cream/65 hover:text-cream hover:bg-cream/[0.06]"
                                 }`}
                               >
@@ -1184,7 +1171,7 @@ export function StudioConfigurator({
                                   onClick={() => setActiveColorTab(l.key)}
                                   className={`rounded-lg py-1.5 px-2.5 text-center font-mono text-[10.5px] font-bold uppercase tracking-wider transition-all duration-200 truncate ${
                                     active
-                                      ? "bg-cream text-[var(--color-base)] shadow-md scale-[1.01]"
+                                      ? "seg-on"
                                       : "text-cream/65 hover:text-cream hover:bg-cream/[0.06]"
                                   }`}
                                 >
@@ -1477,12 +1464,10 @@ function FilamentColorCard({
 
   return (
     <div
-      className="rounded-[20px] border border-[#E6E1D5] p-4 shadow-xl transition-all duration-200"
-      style={{ backgroundColor: "#FDFBF7", color: "#161D18" }}
+      className="rounded-[20px] border border-cream/[0.12] bg-panel-2 p-4 text-cream transition-all duration-200"
     >
       <div
-        className="mb-2.5 font-mono text-[11.5px] font-extrabold uppercase tracking-[0.2em]"
-        style={{ color: "#161D18" }}
+        className="mb-2.5 text-[13px] font-semibold"
       >
         {title}
       </div>
@@ -1490,8 +1475,7 @@ function FilamentColorCard({
       {FILAMENT_LINES.map((group, groupIdx) => (
         <div key={group.line} className={groupIdx > 0 ? "mt-3.5" : ""}>
           <div
-            className="mb-2 font-mono text-[9px] font-bold uppercase tracking-[0.18em]"
-            style={{ color: "#637067" }}
+            className="mb-2 font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-cream/50"
           >
             BAMBU {group.line}
           </div>
@@ -1506,7 +1490,7 @@ function FilamentColorCard({
                   onClick={() => onChange(hex)}
                   className={`relative h-6.5 w-6.5 sm:h-7 sm:w-7 rounded-[8px] border transition-transform duration-150 active:scale-90 hover:scale-110 ${
                     isSelected
-                      ? "ring-2 ring-[#161D18] ring-offset-2 ring-offset-[#FDFBF7] z-10 scale-105"
+                      ? "ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--color-panel-2)] z-10 scale-105"
                       : "border-black/15 opacity-90 hover:opacity-100"
                   }`}
                   style={{ backgroundColor: hex }}
@@ -1518,11 +1502,10 @@ function FilamentColorCard({
       ))}
 
       <div
-        className="mt-3.5 border-t border-dashed pt-2.5 font-mono text-[12px] font-bold flex items-center justify-between"
-        style={{ borderColor: "#E0DACC", color: "#161D18" }}
+        className="mt-3.5 border-t border-dashed border-cream/15 pt-2.5 text-[12.5px] font-medium flex items-center justify-between"
       >
         <span>{selectedInfo.name}</span>
-        <span className="text-[10.5px] font-semibold" style={{ color: "#637067" }}>
+        <span className="font-mono text-[10.5px] text-cream/50">
           {selectedInfo.hex}
         </span>
       </div>

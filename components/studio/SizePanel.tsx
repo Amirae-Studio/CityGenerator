@@ -167,7 +167,7 @@ export function SizePanel({
             <button
               type="button"
               onClick={onFit}
-              className="shrink-0 rounded-full bg-cream px-3 py-1 text-[11.5px] font-medium text-[var(--color-base)]"
+              className="shrink-0 rounded-full btn-primary px-3 py-1 text-[11.5px]"
             >
               Fit to bed
             </button>
@@ -202,7 +202,7 @@ export function SizePanel({
                 type="button"
                 onClick={() => onMode(m)}
                 className={`flex items-center justify-center gap-1 rounded-full py-[6px] text-[11px] transition-colors ${
-                  on ? "bg-cream font-medium text-[var(--color-base)]" : "text-cream/55 hover:text-cream"
+                  on ? "seg-on font-medium" : "text-cream/55 hover:text-cream"
                 }`}
               >
                 {icon}

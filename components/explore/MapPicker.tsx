@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   GeoJSONSource,
-  Map as MLMap,
+  Map as MBMap,
   MapMouseEvent,
   MapTouchEvent,
-} from "maplibre-gl";
+} from "mapbox-gl";
 // CSP build: its web worker is a real file served from 'self' instead of a
 // blob: URL, so MakerLab's strict CSP (worker-src 'self') allows it.
-import maplibregl from "maplibre-gl/dist/maplibre-gl-csp.js";
-import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-csp-worker.js?url";
-import "maplibre-gl/dist/maplibre-gl.css";
+import mapboxgl from "mapbox-gl/dist/mapbox-gl-csp.js";
+import mapboxWorkerUrl from "mapbox-gl/dist/mapbox-gl-csp-worker.js?url";
+import "mapbox-gl/dist/mapbox-gl.css";
 
-maplibregl.setWorkerUrl(maplibreWorkerUrl);
+mapboxgl.workerUrl = mapboxWorkerUrl;
 import {
   Circle,
   Crosshair,
@@ -48,104 +48,64 @@ import {
 } from "@/lib/explore/geo";
 import { PRINT_MM } from "@/lib/explore/buildModel";
 
-const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services";
-
-/** Optional: with a Mapbox token the map uses Mapbox satellite imagery and
- *  geocoding (same as the Blender BLOSM setup). Without one — or if Mapbox
- *  refuses the token — Esri imagery + Photon search. */
-const MAPBOX_TOKEN: string | undefined = import.meta.env.NEXT_PUBLIC_MAPBOX_TOKEN || undefined;
-
 /*
- * Neutral map display: no country borders (disputed or not) and no country,
- * state or sea names anywhere on the map, to stay clear of territorial
- * disputes. So the imagery is photo-only (Mapbox satellite-v9, Esri World
- * Imagery), the satellite overlay is Esri's roads-only reference layer, and the
- * street map is OpenFreeMap vector tiles with those layers removed.
+ * Basemaps: Mapbox GL JS drawing Mapbox Standard (the same engine and data
+ * Mapbox Studio uses): small vector tiles drawn in the browser, 3D buildings
+ * included. Billed per map load, not per tile.
+ * - Street map: the project's Mapbox Studio style (built on Standard), or
+ *   mapbox/standard when none is set.
+ * - Satellite: mapbox/standard-satellite, or the project's own satellite style.
+ *
+ * Neutral map display is a hard requirement: no country/state borders and no
+ * country, state or sea names. Standard's own switches enforce it below, on
+ * top of whatever the Studio style says.
  */
-const ESRI_STYLE_SOURCES: maplibregl.StyleSpecification["sources"] = {
-  "sat-esri": {
-    type: "raster",
-    tiles: [`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`],
-    tileSize: 256,
-    maxzoom: 19,
-    attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
-  },
-  roads: {
-    type: "raster",
-    tiles: [`${ESRI}/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}`],
-    tileSize: 256,
-    maxzoom: 19,
-  },
-};
+const MAPBOX_TOKEN: string | undefined = import.meta.env.NEXT_PUBLIC_MAPBOX_TOKEN || undefined;
+if (MAPBOX_TOKEN) mapboxgl.accessToken = MAPBOX_TOKEN;
 
-const MAP_STYLE: maplibregl.StyleSpecification = {
-  version: 8,
-  sources: {
-    ...(MAPBOX_TOKEN
-      ? {
-          "sat-mapbox": {
-            type: "raster",
-            tiles: [`https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/256/{z}/{x}/{y}@2x?access_token=${MAPBOX_TOKEN}`],
-            tileSize: 256,
-            maxzoom: 22,
-            attribution: "© Mapbox © OpenStreetMap contributors",
-          },
-        }
-      : {}),
-    ...ESRI_STYLE_SOURCES,
-  },
-  layers: [
-    ...(MAPBOX_TOKEN ? [{ id: "sat-mapbox", type: "raster" as const, source: "sat-mapbox" }] : []),
-    {
-      id: "sat-esri",
-      type: "raster",
-      source: "sat-esri",
-      layout: { visibility: MAPBOX_TOKEN ? "none" : "visible" },
-    },
-    { id: "roads", type: "raster", source: "roads", paint: { "raster-opacity": 0.75 } },
-  ],
-};
+/** Accepts "user/styleId" or a "mapbox://styles/user/styleId" URL. */
+function styleUrl(v?: string) {
+  const id = v?.trim().replace(/^mapbox:\/\/styles\//, "").replace(/\/$/, "");
+  return id ? `mapbox://styles/${id}` : undefined;
+}
+const STREET_STYLE = styleUrl(import.meta.env.NEXT_PUBLIC_MAPBOX_STREET_STYLE) ?? "mapbox://styles/mapbox/standard";
+const SATELLITE_STYLE =
+  styleUrl(import.meta.env.NEXT_PUBLIC_MAPBOX_SATELLITE_STYLE) ?? "mapbox://styles/mapbox/standard-satellite";
 
-/** Street map: OpenFreeMap (free, no key) minus borders and political labels. */
-const STREET_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
-const STREET_PREFIX = "street-";
+/** What's missing for the map to show, or null when it's ready. */
+const SETUP_ISSUE: string | null = MAPBOX_TOKEN ? null : "NEXT_PUBLIC_MAPBOX_TOKEN is not set";
 
-function isPolitical(layer: maplibregl.LayerSpecification): boolean {
-  const src = "source-layer" in layer ? layer["source-layer"] : undefined;
-  if (src === "boundary") return true; // country / state / disputed border lines
-  if (src === "water_name") return true; // sea and ocean names, some of them disputed
-  return /^label_(country|state)/.test(layer.id);
+/** Standard's style fragment that the switches below apply to. */
+const BASEMAP = "basemap";
+/** Place names show only from this zoom in. Zoomed further out they are
+ *  country and state names (and sea names), which must never appear. */
+const PLACE_LABEL_MIN_ZOOM = 10;
+
+/** The neutral-display switches for a given zoom. */
+function neutralConfig(zoom: number) {
+  return { showAdminBoundaries: false, showPlaceLabels: zoom >= PLACE_LABEL_MIN_ZOOM };
 }
 
-/** Loads the street style and adds it, hidden, beneath `beforeId`. Returns its layer ids. */
-async function addStreetLayers(map: maplibregl.Map, beforeId: string): Promise<string[]> {
-  const res = await fetch(STREET_STYLE_URL);
-  if (!res.ok) throw new Error(`Street style ${res.status}`);
-  const style = (await res.json()) as maplibregl.StyleSpecification;
-  if (style.glyphs) map.setGlyphs(style.glyphs);
-  if (typeof style.sprite === "string") map.setSprite(style.sprite);
-  for (const [id, src] of Object.entries(style.sources)) if (!map.getSource(id)) map.addSource(id, src);
-  const ids: string[] = [];
-  for (const layer of style.layers) {
-    if (isPolitical(layer)) continue;
-    const l = { ...layer, id: STREET_PREFIX + layer.id } as maplibregl.LayerSpecification;
-    // Capitals get a star; drop it so no city is marked as anyone's capital.
-    if (layer.id === "label_city_capital" && l.type === "symbol") l.layout = { ...l.layout, "icon-image": "" };
-    l.layout = { ...l.layout, visibility: "none" };
-    map.addLayer(l, beforeId);
-    ids.push(l.id);
-  }
-  return ids;
-}
+/** "Use my location" needs the geolocation permission. Inside MakerLab's
+ *  sandboxed iframe it may be withheld; then the button is hidden rather than
+ *  failing on click. (Browsers without featurePolicy just try.) */
+const CAN_LOCATE =
+  typeof navigator !== "undefined" &&
+  "geolocation" in navigator &&
+  ((document as Document & { featurePolicy?: { allowsFeature(f: string): boolean } }).featurePolicy?.allowsFeature(
+    "geolocation"
+  ) ?? true);
 
-/** Shows either the satellite layers or the street map. */
-function showBase(map: maplibregl.Map, satellite: boolean, satLayers: string[], streetIds: string[]) {
-  // Without the street map (still loading, or unreachable) stay on satellite.
-  const sat = satellite || !streetIds.length;
-  for (const id of ["sat-mapbox", "sat-esri", "roads"]) {
-    if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", sat && satLayers.includes(id) ? "visible" : "none");
-  }
-  for (const id of streetIds) map.setLayoutProperty(id, "visibility", sat ? "none" : "visible");
+/** Farther than this, a search result or preset city is jumped to, not flown
+ *  to: a long flight loads tiles all along the way before the ones that matter. */
+const FLY_MAX_KM = 40;
+
+function haversineKm([lng1, lat1]: LngLat, [lng2, lat2]: LngLat) {
+  const rad = Math.PI / 180;
+  const a =
+    Math.sin(((lat2 - lat1) * rad) / 2) ** 2 +
+    Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(((lng2 - lng1) * rad) / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(a));
 }
 
 const SHAPES: [ShapeKind, string, typeof Square][] = [
@@ -158,13 +118,24 @@ const SHAPES: [ShapeKind, string, typeof Square][] = [
   ["custom", "Custom", PenTool],
 ];
 
-const ACCENT = "#e5b229";
+const ACCENT = "#1fa463";
 
 export const MIN_SIZE = 150;
 export const MAX_SIZE = 2000;
 
 /** Screen distance (px) between the frame's top edge and its rotate knob. */
 const KNOB_GAP = 36;
+
+/** Quick-start places shown under the search, so a first-time visitor can try
+ *  the app in one click. Each centres on a well-known, building-dense spot. */
+const PRESET_CITIES: { name: string; spot: string; center: LngLat }[] = [
+  { name: "Paris", spot: "Eiffel Tower", center: [2.2945, 48.8584] },
+  { name: "New York", spot: "Midtown Manhattan", center: [-73.9855, 40.758] },
+  { name: "London", spot: "Westminster", center: [-0.1246, 51.5007] },
+  { name: "Tokyo", spot: "Shibuya Crossing", center: [139.7005, 35.6595] },
+  { name: "Rome", spot: "Colosseum", center: [12.4922, 41.8902] },
+  { name: "Sydney", spot: "Opera House", center: [151.2153, -33.8568] },
+];
 
 type SearchHit = {
   id: string;
@@ -270,21 +241,22 @@ export function MapPicker({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<MLMap | null>(null);
-  const labelRef = useRef<maplibregl.Marker | null>(null);
-  const gripRef = useRef<maplibregl.Marker | null>(null);
+  const mapRef = useRef<MBMap | null>(null);
+  const labelRef = useRef<mapboxgl.Marker | null>(null);
+  const gripRef = useRef<mapboxgl.Marker | null>(null);
   const shapeRef = useRef(shape);
   shapeRef.current = shape;
   const lockedRef = useRef(locked);
   lockedRef.current = locked;
   const onShapeChangeRef = useRef(onShapeChange);
   onShapeChangeRef.current = onShapeChange;
-  const [ready, setReady] = useState(false);
-  const [satellite, setSatellite] = useState(true);
+  /** Counts finished style loads; the overlay exists once it's above 0. */
+  const [styleGen, setStyleGen] = useState(0);
+  const ready = styleGen > 0;
+  const [satellite, setSatellite] = useState(false); // street map by default
   const satelliteRef = useRef(satellite);
-  /** Visible satellite layers — switches to Esri if Mapbox refuses the token. */
-  const satLayersRef = useRef<string[]>(MAPBOX_TOKEN ? ["sat-mapbox", "roads"] : ["sat-esri", "roads"]);
-  const streetIdsRef = useRef<string[]>([]);
+  /** A setup or Mapbox problem to show over the map (bad token, missing style). */
+  const [mapIssue, setMapIssue] = useState<string | null>(SETUP_ISSUE);
   const [grab, setGrab] = useState<Grab | null>(null);
   const grabRef = useRef<Grab | null>(null);
   grabRef.current = grab;
@@ -313,7 +285,7 @@ export function MapPicker({
     // The customise panel sits on the right on desktop.
     const right = lockedRef.current && w >= 768 ? 400 : side;
     return {
-      top: Math.min(lockedRef.current ? 40 : 84 + KNOB_GAP, h * 0.25),
+      top: Math.min(lockedRef.current ? 40 : 124 + KNOB_GAP, h * 0.3),
       bottom: Math.min(panel ? panel + 52 : 48, h * 0.5),
       left: side,
       right: Math.min(right, w * 0.6),
@@ -321,14 +293,21 @@ export function MapPicker({
   }, []);
 
   /** Animate the camera so the whole frame sits in the clear area. `fly`
-   *  arcs out and back in like flyTo, for jumps to somewhere far away. */
+   *  arcs out and back in like flyTo for nearby moves; somewhere far away
+   *  (another city) is jumped to directly, because a long flight fetches and
+   *  decodes dozens of tiles along the way that hold up the ones at the end. */
   const fitFrame = useCallback(
     (s: FrameShape = shapeRef.current, { instant = false, fly = false } = {}) => {
       const map = mapRef.current;
       const pts = lockedRef.current ? shapeLngLatRing(s) : editExtent(s);
       if (!map || !pts.length) return;
+      if (fly) {
+        const c = map.getCenter();
+        const km = haversineKm([c.lng, c.lat], s.center);
+        if (km > FLY_MAX_KM) instant = true;
+      }
       // flyTo turns an explicit `duration: undefined` into NaN, so leave it out.
-      const timing = fly ? { linear: false, speed: 1.6 } : { duration: instant ? 0 : 500 };
+      const timing = fly && !instant ? { linear: false, speed: 1.6 } : { duration: instant ? 0 : 500 };
       map.fitBounds(lngLatBounds(pts), { padding: fitPadding(), maxZoom: 18, ...timing });
     },
     [fitPadding]
@@ -473,48 +452,145 @@ export function MapPicker({
     if (!containerRef.current) return;
     const el = containerRef.current;
     const px = Math.min(el.clientWidth, el.clientHeight) || 600;
-    const map = new maplibregl.Map({
+    const zoom = zoomForSize(shapeRef.current.size, shapeRef.current.center[1], px);
+    const map = new mapboxgl.Map({
       container: el,
-      style: MAP_STYLE,
+      style: satelliteRef.current ? SATELLITE_STYLE : STREET_STYLE,
+      config: { [BASEMAP]: neutralConfig(zoom) },
       center: shapeRef.current.center,
-      zoom: zoomForSize(shapeRef.current.size, shapeRef.current.center[1], px),
+      zoom,
       maxZoom: 19,
-      attributionControl: { compact: true },
+      // Flat top-down map: the frame is drawn on the ground in Web Mercator.
+      projection: "mercator",
+      attributionControl: false,
       dragRotate: false,
       pitchWithRotate: false,
     });
     mapRef.current = map;
     map.touchZoomRotate.disableRotation();
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
-    map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
+    map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "top-right");
+    map.addControl(new mapboxgl.ScaleControl({ unit: "metric" }), "bottom-left");
+    map.addControl(new mapboxgl.AttributionControl({ compact: true }), "bottom-right");
 
-    // A Mapbox token that's invalid, out of scope or blocked on the account
-    // answers every tile with 401/403 — switch to Esri instead of a blank map.
+    // Place names follow the zoom (see PLACE_LABEL_MIN_ZOOM): flip the switch
+    // only when crossing the threshold, since each change re-lays out labels.
+    let placeLabels = neutralConfig(zoom).showPlaceLabels;
+    const applyNeutral = (force = false) => {
+      const want = neutralConfig(map.getZoom());
+      if (!force && want.showPlaceLabels === placeLabels) return;
+      placeLabels = want.showPlaceLabels;
+      for (const [key, value] of Object.entries(want)) map.setConfigProperty(BASEMAP, key, value);
+    };
+    map.on("zoom", () => applyNeutral());
+
+    // Mapbox answers 401/403 for a bad or URL-restricted token, and 404 for a
+    // style it can't find (wrong ID, or a style owned by another account).
+    // Say so instead of leaving a blank map.
+    // Every problem is kept and listed (the first one is usually the cause),
+    // so one screenshot of the alert is enough to diagnose a broken map.
+    const issues: string[] = [];
+    const report = (issue: string) => {
+      const clean = issue.replace(/access_token=[^&\s]+/g, "access_token=…");
+      // Every tile fails the same way: report each problem once.
+      if (issues.includes(clean)) return;
+      issues.push(clean);
+      console.warn(`[MapPicker] ${clean}`);
+      setMapIssue(issues.join("\n"));
+    };
+    let styleLoaded = false;
+    let lastError = "";
+    // When a request fails with no HTTP answer, find out why: what the page's
+    // own CSP allows, and whether Mapbox and another host are reachable.
+    let probed = false;
+    const probe = async () => {
+      if (probed) return;
+      probed = true;
+      const out: string[] = [];
+      try {
+        const res = await fetch(location.href, { cache: "no-store" });
+        const csp = res.headers.get("content-security-policy");
+        const connect = csp?.split(";").map((d) => d.trim()).find((d) => d.startsWith("connect-src"));
+        out.push(
+          !csp
+            ? "page sends no CSP header"
+            : !connect
+              ? "page CSP has no connect-src"
+              : `page CSP ${connect.includes("api.mapbox.com") ? "allows" : "does NOT allow"} api.mapbox.com`,
+        );
+        // The whole policy the host served, to compare with the one submitted.
+        if (csp) out.push(`served CSP: ${csp.replace(/\s+/g, " ").slice(0, 900)}`);
+      } catch (e) {
+        out.push(`page headers unreadable (${(e as Error).message})`);
+      }
+      const meta = document.querySelector('meta[http-equiv="Content-Security-Policy" i]')?.getAttribute("content");
+      if (meta) out.push(`meta CSP: ${meta.slice(0, 160)}`);
+      const styleHttp = STREET_STYLE.replace("mapbox://styles/", "https://api.mapbox.com/styles/v1/");
+      for (const [name, url] of [
+        ["Mapbox", `${styleHttp}?access_token=${MAPBOX_TOKEN}`],
+        ["Photon", "https://photon.komoot.io/api/?q=paris&limit=1"],
+      ]) {
+        try {
+          out.push(`${name} HTTP ${(await fetch(url, { cache: "no-store" })).status}`);
+        } catch (e) {
+          out.push(`${name} failed (${(e as Error).message})`);
+        }
+      }
+      out.push(
+        `fetch ${/\[native code\]/.test(String(window.fetch)) ? "native" : "wrapped"}, ${navigator.onLine ? "online" : "offline"}, ${window === window.top ? "top window" : "in iframe"}`,
+      );
+      report(`Checks: ${out.join(" · ")}`);
+    };
     map.on("error", (e) => {
-      const { error } = e as unknown as { error?: { status?: number; url?: string } };
-      if (!satLayersRef.current.includes("sat-mapbox") || !error?.url?.includes("api.mapbox.com")) return;
-      if (error.status !== 401 && error.status !== 403) return;
-      console.warn(`[MapPicker] Mapbox refused the token (${error.status}) — using Esri imagery`);
-      satLayersRef.current = ["sat-esri", "roads"];
-      showBase(map, satelliteRef.current, satLayersRef.current, streetIdsRef.current);
+      const { error } = e as unknown as { error?: { status?: number; url?: string; message?: string } };
+      if (!error) return;
+      lastError = error.message || String(error);
+      const which = satelliteRef.current ? "satellite" : "street";
+      if (error.url?.includes("api.mapbox.com") && (error.status === 401 || error.status === 403)) {
+        report(`Mapbox refused the token (${error.status}). Check its URL restrictions and that the Mapbox account is active, with billing set up`);
+      } else if (error.url?.includes("api.mapbox.com") && error.status === 404) {
+        report(`Mapbox can't find the ${which} style (404)`);
+      } else if (!styleLoaded) {
+        // No HTTP status: the request never completed, usually because the
+        // host page's security policy (CSP), the sandbox or a content
+        // blocker stopped it.
+        report(`Couldn't load the map: ${lastError}`);
+        void probe();
+      }
     });
+    // Anything the page's security policy blocks (a host missing from
+    // connect-src, a worker, WebAssembly…) fails silently otherwise.
+    const onCsp = (e: SecurityPolicyViolationEvent) => {
+      if (!styleLoaded) report(`Blocked by the page's security policy: ${e.violatedDirective} ${e.blockedURI}`);
+    };
+    document.addEventListener("securitypolicyviolation", onCsp);
+    // Last resort: the style never finished loading, with no error event.
+    const watchdog = setTimeout(() => {
+      if (styleLoaded) return;
+      if (!issues.length) report("The map didn't finish loading within 20 seconds");
+      void probe();
+    }, 20000);
 
     const badge = document.createElement("div");
     badge.className =
-      "pointer-events-none whitespace-nowrap rounded-full border border-white/20 bg-black/75 px-2.5 py-1 font-mono text-[10.5px] font-medium tracking-wide text-white shadow-lg backdrop-blur-md";
-    labelRef.current = new maplibregl.Marker({ element: badge, anchor: "top", offset: [0, 12] })
+      "pointer-events-none whitespace-nowrap rounded-full bg-white px-2.5 py-1 font-mono text-[10.5px] font-medium tracking-wide text-[#15201a] shadow-lg";
+    labelRef.current = new mapboxgl.Marker({ element: badge, anchor: "top", offset: [0, 12] })
       .setLngLat(shapeRef.current.center)
       .addTo(map);
 
     // Centre grip: always grabs the frame, even when it fills the screen.
     const grip = document.createElement("div");
     grip.className =
-      "pointer-events-none flex h-8 w-8 items-center justify-center rounded-full border-2 border-white bg-black/60 text-white shadow-lg backdrop-blur-sm";
+      "pointer-events-none flex h-8 w-8 items-center justify-center rounded-full border-2 border-white bg-[#1fa463] text-white shadow-lg";
     grip.innerHTML =
       '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M2 12h20M9 5l3-3 3 3M9 19l3 3 3-3M5 9l-3 3 3 3M19 9l3 3-3 3"/></svg>';
-    gripRef.current = new maplibregl.Marker({ element: grip }).setLngLat(shapeRef.current.center).addTo(map);
+    gripRef.current = new mapboxgl.Marker({ element: grip }).setLngLat(shapeRef.current.center).addTo(map);
 
-    map.on("load", () => {
+    // The frame overlay lives in the style, so it is (re)added each time a
+    // style finishes loading: on start, and after switching street/satellite.
+    map.on("style.load", () => {
+      styleLoaded = true;
+      clearTimeout(watchdog);
+      applyNeutral(true);
       map.addSource("mask", { type: "geojson", data: emptyFc() });
       map.addSource("frame", { type: "geojson", data: emptyFc() });
       map.addSource("draft", { type: "geojson", data: emptyFc() });
@@ -579,15 +655,12 @@ export function MapPicker({
           "circle-stroke-width": 2,
         },
       });
-      setReady(true);
-
-      addStreetLayers(map, "mask")
-        .then((ids) => {
-          if (mapRef.current !== map) return;
-          streetIdsRef.current = ids;
-          showBase(map, satelliteRef.current, satLayersRef.current, ids);
-        })
-        .catch((err) => console.warn("[MapPicker] street map unavailable", err));
+      // Standard lights the scene (e.g. a dawn preset); keep the frame
+      // overlay at full brightness regardless.
+      for (const id of ["mask", "frame-fill"]) map.setPaintProperty(id, "fill-emissive-strength", 1);
+      for (const id of ["frame-glow", "frame-line", "guides", "draft-line"]) map.setPaintProperty(id, "line-emissive-strength", 1);
+      for (const id of ["vertices", "handles"]) map.setPaintProperty(id, "circle-emissive-strength", 1);
+      setStyleGen((g) => g + 1);
     });
 
     // Handles keep a fixed screen distance from the frame, so redraw on zoom.
@@ -629,6 +702,7 @@ export function MapPicker({
       const pad = touch ? 16 : 6;
       if (drawingRef.current || lockedRef.current) return null;
       const { x, y } = e.point;
+      if (!map.getLayer("handles")) return null; // style still (re)loading
       const [f] = map.queryRenderedFeatures(
         [
           [x - pad, y - pad],
@@ -636,7 +710,7 @@ export function MapPicker({
         ],
         { layers: ["handles", "vertices"] }
       );
-      if (f?.layer.id === "vertices") return { kind: "vertex", i: Number(f.properties?.i) };
+      if (f?.layer?.id === "vertices") return { kind: "vertex", i: Number(f.properties?.i) };
       if (f) return { kind: f.properties?.role === "rotate" ? "rotate" : "resize" };
       const s = shapeRef.current;
       const ring = shapePolygon(s);
@@ -734,6 +808,8 @@ export function MapPicker({
 
     return () => {
       ro.disconnect();
+      clearTimeout(watchdog);
+      document.removeEventListener("securitypolicyviolation", onCsp);
       window.removeEventListener("mouseup", end);
       labelRef.current = null;
       gripRef.current = null;
@@ -745,7 +821,8 @@ export function MapPicker({
   // Redraw the frame, mask, handles and size badge whenever the shape changes.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !ready) return;
+    // No overlay while a style is (re)loading; style.load bumps styleGen.
+    if (!map || !ready || !map.getSource("frame")) return;
     const ring = drawing ? [] : shapeLngLatRing(shape);
     (map.getSource("frame") as GeoJSONSource).setData(
       ring.length
@@ -792,7 +869,7 @@ export function MapPicker({
               : `${formatMeters(shape.size)} ${shape.kind === "circle" ? "across" : "wide"}`;
       }
     }
-  }, [shape, ready, drawing, locked, grab, renderDraft, renderHandles, checkOffscreen]);
+  }, [shape, ready, styleGen, drawing, locked, grab, renderDraft, renderHandles, checkOffscreen]);
 
   // After the frame grows, shrinks, turns or changes shape, pull the camera
   // back only if part of it ended up hidden. Waits for drags to finish.
@@ -843,12 +920,18 @@ export function MapPicker({
     opened.current = true;
   }, [locked, ready, fitFrame]);
 
+  // Street ↔ satellite: load the other style; style.load re-adds the overlay.
   useEffect(() => {
+    if (satelliteRef.current === satellite) return;
     satelliteRef.current = satellite;
     const map = mapRef.current;
-    if (!map || !ready) return;
-    showBase(map, satellite, satLayersRef.current, streetIdsRef.current);
-  }, [satellite, ready]);
+    if (!map) return;
+    map.setStyle(satellite ? SATELLITE_STYLE : STREET_STYLE, {
+      config: { [BASEMAP]: neutralConfig(map.getZoom()) },
+      localFontFamily: undefined,
+      localIdeographFontFamily: undefined,
+    });
+  }, [satellite]);
 
   /** Search result: the frame moves to the place and the camera follows. */
   function flyToHit(hit: SearchHit) {
@@ -889,52 +972,108 @@ export function MapPicker({
   const mPerMm = shape.size / PRINT_MM;
 
   return (
-    <div className="relative h-full w-full overflow-hidden max-md:[&_.maplibregl-ctrl-top-right]:hidden [&_.maplibregl-ctrl-top-right]:mr-1 [&_.maplibregl-ctrl-top-right]:mt-1">
-      {/* maplibre's own CSS forces `position: relative` on the container,
+    <div className="relative h-full w-full overflow-hidden max-md:[&_.mapboxgl-ctrl-top-right]:hidden [&_.mapboxgl-ctrl-top-right]:mr-1 [&_.mapboxgl-ctrl-top-right]:mt-1">
+      {/* Mapbox's own CSS forces `position: relative` on the container,
           so it fills an absolutely positioned wrapper instead. */}
       <div className="absolute inset-0">
         <div ref={containerRef} className="h-full w-full" />
       </div>
 
-      {/* Search + basemap */}
+      {/* Search + basemap + quick-start cities */}
       {!locked && (
-        <div className="absolute left-4 right-4 top-4 z-10 flex items-start gap-2 md:right-auto md:w-[460px]">
-          <PlaceSearch onPick={flyToHit} getBias={getBias} />
-          <button
-            type="button"
-            onClick={() => setSatellite((s) => !s)}
-            title={satellite ? "Switch to street map" : "Switch to satellite"}
-            className="flex h-12 shrink-0 items-center gap-1.5 rounded-2xl border border-white/15 bg-black/70 px-3 font-mono text-[10px] font-bold uppercase tracking-wider text-white backdrop-blur-xl transition-colors hover:bg-black/85"
-          >
-            <Layers size={15} />
-            <span className="hidden sm:inline">{satellite ? "Map" : "Satellite"}</span>
-          </button>
-          <button
-            type="button"
-            onClick={locateMe}
-            title="Move the frame to my location"
-            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/15 bg-black/70 text-white backdrop-blur-xl transition-colors hover:bg-black/85"
-          >
-            <LocateFixed size={16} />
-          </button>
+        <div className="absolute left-4 right-4 top-4 z-10 flex flex-col gap-2 md:right-auto md:w-[500px]">
+          <div className="flex items-start gap-2">
+            <PlaceSearch onPick={flyToHit} getBias={getBias} />
+            {MAPBOX_TOKEN && (
+              <button
+                type="button"
+                onClick={() => setSatellite((s) => !s)}
+                title={satellite ? "Switch to street map" : "Switch to satellite"}
+                className="float-panel flex h-12 shrink-0 items-center gap-1.5 rounded-2xl px-3 text-[12.5px] text-cream/80 transition-colors hover:text-cream"
+              >
+                <Layers size={15} />
+                <span className="hidden sm:inline">{satellite ? "Map" : "Satellite"}</span>
+              </button>
+            )}
+            {CAN_LOCATE && (
+              <button
+                type="button"
+                onClick={locateMe}
+                title="Move the frame to my location"
+                aria-label="Use my location"
+                className="float-panel flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-cream/80 transition-colors hover:text-cream"
+              >
+                <LocateFixed size={16} />
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5 overflow-x-auto [scrollbar-width:none]">
+            <span className="float-panel shrink-0 rounded-full px-2.5 py-1.5 text-[11.5px] text-cream/55">Try</span>
+            {PRESET_CITIES.map((c) => (
+              <button
+                key={c.name}
+                type="button"
+                onClick={() => flyToHit({ id: `preset-${c.name}`, title: c.name, subtitle: c.spot, center: c.center })}
+                title={`${c.spot}, ${c.name}`}
+                className="float-panel shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-[12px] text-cream/85 transition-colors hover:border-[var(--accent)] hover:text-[var(--accent-text)]"
+              >
+                {c.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Map setup / Mapbox problems: never a silent blank map. */}
+      {mapIssue && (
+        <div
+          role="alert"
+          className="float-panel absolute left-1/2 top-[170px] z-10 flex w-[min(440px,calc(100%-32px))] -translate-x-1/2 items-start gap-3 rounded-2xl p-4"
+        >
+          <div className="min-w-0 flex-1">
+            <p className="m-0 text-[13px] font-medium text-cream">
+              {MAPBOX_TOKEN ? "The map couldn't fully load" : "The map isn't set up yet"}
+            </p>
+            <p className="m-0 mt-1 text-[12px] leading-[1.5] text-cream/60">
+              {import.meta.env.DEV
+                ? `${mapIssue}. See "Map setup" in the README.`
+                : "Please refresh the page or try again later."}
+            </p>
+            {!import.meta.env.DEV && (
+              // The technical reason, so a screenshot is enough to diagnose it.
+              <p className="m-0 mt-1.5 max-h-48 select-text overflow-y-auto whitespace-pre-line break-all font-mono text-[10.5px] leading-[1.4] text-cream/40">
+                {mapIssue}
+              </p>
+            )}
+          </div>
+          {MAPBOX_TOKEN && (
+            <button
+              type="button"
+              onClick={() => setMapIssue(null)}
+              aria-label="Dismiss"
+              className="shrink-0 text-cream/40 hover:text-cream"
+            >
+              <X size={15} />
+            </button>
+          )}
         </div>
       )}
 
       {/* The frame is pinned to the ground — say so when it scrolls away. */}
       {!locked && offscreen && !drawing && (
-        <div className="absolute left-1/2 top-[76px] z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/15 bg-black/80 p-1 pl-3.5 text-white shadow-[0_10px_30px_rgba(0,0,0,0.4)] backdrop-blur-xl">
-          <span className="mr-1 whitespace-nowrap text-[12px] text-white/75">Frame is out of view</span>
+        <div className="float-panel absolute left-1/2 top-[124px] z-10 flex -translate-x-1/2 items-center gap-1 rounded-full p-1 pl-3.5 text-cream">
+          <span className="mr-1 whitespace-nowrap text-[12px] text-cream/70">Frame is out of view</span>
           <button
             type="button"
             onClick={() => fitFrame()}
-            className="flex items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-[12px] text-white/85 transition-colors hover:bg-white/10"
+            className="flex items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-[12px] text-cream/80 transition-colors hover:bg-cream/[0.06]"
           >
             <Scan size={13} /> Show it
           </button>
           <button
             type="button"
             onClick={moveHere}
-            className="flex items-center gap-1.5 whitespace-nowrap rounded-full bg-white px-3 py-1.5 text-[12px] font-medium text-black transition-transform hover:scale-[1.03]"
+            className="btn-primary flex items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-[12px]"
           >
             <Crosshair size={13} /> Move here
           </button>
@@ -945,7 +1084,7 @@ export function MapPicker({
       {!locked && (
         <div
           ref={panelRef}
-          className="absolute bottom-6 left-1/2 z-10 w-[min(760px,calc(100%-32px))] -translate-x-1/2 rounded-2xl border border-cream/[0.14] bg-panel/95 p-4 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl md:bottom-8"
+          className="float-panel absolute bottom-6 left-1/2 z-10 w-[min(760px,calc(100%-32px))] -translate-x-1/2 rounded-2xl p-4 md:bottom-8"
         >
           <div className="mb-3 flex items-center justify-between gap-3">
             <div className="flex min-w-0 gap-1 overflow-x-auto rounded-full border border-cream/[0.14] p-1 [scrollbar-width:none]">
@@ -959,7 +1098,7 @@ export function MapPicker({
                     aria-pressed={on}
                     onClick={() => pickShape(kind)}
                     className={`flex shrink-0 items-center justify-center gap-1.5 rounded-full px-2.5 py-[7px] text-[11.5px] transition-colors duration-200 ${
-                      on ? "bg-cream font-medium text-[var(--color-base)]" : "text-cream/60 hover:text-cream"
+                      on ? "seg-on font-medium" : "text-cream/60 hover:text-cream"
                     }`}
                   >
                     <Icon size={13} />
@@ -989,7 +1128,7 @@ export function MapPicker({
                     ? `Click the map to place corner ${draftCount + 1}`
                     : "Click the first point or press Enter to finish"}
                 </p>
-                <p className="m-0 mt-0.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-cream/45">
+                <p className="m-0 mt-0.5 text-[11.5px] text-cream/50">
                   {draftCount} point{draftCount === 1 ? "" : "s"} · Backspace undoes · Esc cancels
                 </p>
               </div>
@@ -1013,7 +1152,7 @@ export function MapPicker({
                   type="button"
                   onClick={finishDrawing}
                   disabled={draftCount < 3}
-                  className="rounded-full bg-cream px-4 py-2 text-[12.5px] text-[var(--color-base)] disabled:opacity-40"
+                  className="rounded-full btn-primary px-4 py-2 text-[12.5px] disabled:opacity-40"
                 >
                   Done
                 </button>
@@ -1061,7 +1200,7 @@ export function MapPicker({
 
               <div className="mt-3 flex items-center justify-between gap-3 border-t border-cream/[0.09] pt-3">
                 <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[9.5px] uppercase tracking-[0.12em] text-cream/50">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-cream/55">
                     <span className="flex items-center gap-1 whitespace-nowrap">
                       <Move size={11} />
                       <span className="sm:hidden">Drag the grip to move</span>
@@ -1080,18 +1219,18 @@ export function MapPicker({
                       </>
                     )}
                   </div>
-                  <p className="m-0 mt-1 hidden font-mono text-[9.5px] uppercase tracking-[0.12em] text-cream/35 sm:block">
+                  <p className="m-0 mt-1 hidden text-[11.5px] text-cream/40 sm:block">
                     {PRINT_MM / 10} cm print · 1 mm ≈ {mPerMm < 10 ? mPerMm.toFixed(1) : Math.round(mPerMm)} m
-                    {shape.size > 1200 && <span className="text-[var(--accent)]"> · large areas take longer</span>}
+                    {shape.size > 1200 && <span className="text-[var(--accent-text)]"> · large areas take longer</span>}
                   </p>
                 </div>
                 <button
                   type="button"
                   disabled={busy || !!issue}
                   onClick={onConfirm}
-                  className="shrink-0 rounded-full bg-cream px-5 py-[10px] text-[13px] font-medium text-[var(--color-base)] transition-transform duration-300 hover:scale-[1.03] disabled:opacity-50"
+                  className="shrink-0 rounded-full btn-primary px-5 py-[10px] text-[13px] transition-transform duration-300 hover:scale-[1.03] disabled:opacity-50"
                 >
-                  Select this area →
+                  Use this area
                 </button>
               </div>
             </>
@@ -1102,40 +1241,8 @@ export function MapPicker({
   );
 }
 
-function emptyFc(): maplibregl.GeoJSONSourceSpecification["data"] {
+function emptyFc(): GeoJSON.FeatureCollection {
   return { type: "FeatureCollection", features: [] };
-}
-
-type MapboxFeature = {
-  id?: string;
-  geometry: { coordinates: [number, number] };
-  properties: {
-    mapbox_id?: string;
-    name?: string;
-    full_address?: string;
-    place_formatted?: string;
-    bbox?: [number, number, number, number]; // w, s, e, n
-  };
-};
-
-/** Mapbox Search Box — unlike Geocoding v6 it knows landmarks and businesses (POIs). */
-async function mapboxSearch(query: string, bias: LngLat | null, signal: AbortSignal): Promise<SearchHit[]> {
-  const params = new URLSearchParams({ q: query, limit: "6", language: "en", access_token: MAPBOX_TOKEN! });
-  if (bias) params.set("proximity", `${bias[0]},${bias[1]}`);
-  const res = await fetch(`https://api.mapbox.com/search/searchbox/v1/forward?${params}`, { signal });
-  if (!res.ok) throw new Error(`Mapbox search ${res.status}`);
-  const json = (await res.json()) as { features?: MapboxFeature[] };
-  return (json.features ?? []).map((f, i) => {
-    const p = f.properties;
-    const bb = p.bbox;
-    return {
-      id: `mb-${p.mapbox_id ?? f.id ?? i}`,
-      title: p.name || p.full_address || "Unnamed place",
-      subtitle: p.place_formatted || p.full_address || "",
-      center: f.geometry.coordinates,
-      extent: bb ? [bb[0], bb[3], bb[2], bb[1]] : undefined,
-    };
-  });
 }
 
 async function photonSearch(query: string, bias: LngLat | null, signal: AbortSignal): Promise<SearchHit[]> {
@@ -1155,29 +1262,21 @@ async function photonSearch(query: string, bias: LngLat | null, signal: AbortSig
   });
 }
 
-/** Place search, ranked near the current view like Google Maps. With a Mapbox
- *  token, Mapbox and Photon (OSM) run side by side and their results are
- *  interleaved — each finds places the other misses, and either may be down. */
+/** Place search (Photon, OpenStreetMap data), ranked near the current view. */
 async function geocode(query: string, bias: LngLat | null, signal: AbortSignal): Promise<SearchHit[]> {
-  const sources = [photonSearch(query, bias, signal)];
-  if (MAPBOX_TOKEN) sources.unshift(mapboxSearch(query, bias, signal));
-  const lists = (await Promise.allSettled(sources)).map((r) => (r.status === "fulfilled" ? r.value : []));
-  if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-
   const out: SearchHit[] = [];
-  const same = (a: SearchHit, b: SearchHit) =>
-    a.title.toLowerCase() === b.title.toLowerCase() &&
-    Math.abs(a.center[0] - b.center[0]) < 0.01 &&
-    Math.abs(a.center[1] - b.center[1]) < 0.01;
-  for (let i = 0; out.length < 8 && lists.some((l) => i < l.length); i++) {
-    for (const l of lists) {
-      const hit = l[i];
-      if (!hit) continue;
-      const dup = out.find((h) => same(h, hit));
-      // Keep one entry per place, preferring the one that knows its extent.
-      if (dup) dup.extent ??= hit.extent;
-      else out.push(hit);
-    }
+  // OSM often has the same place twice (e.g. a node and an area): keep one,
+  // preferring the entry that knows its extent.
+  for (const hit of await photonSearch(query, bias, signal)) {
+    const dup = out.find(
+      (h) =>
+        h.title.toLowerCase() === hit.title.toLowerCase() &&
+        h.subtitle === hit.subtitle &&
+        Math.abs(h.center[0] - hit.center[0]) < 0.01 &&
+        Math.abs(h.center[1] - hit.center[1]) < 0.01
+    );
+    if (dup) dup.extent ??= hit.extent;
+    else out.push(hit);
   }
   return out.slice(0, 8);
 }
@@ -1231,8 +1330,8 @@ function PlaceSearch({ onPick, getBias }: { onPick: (hit: SearchHit) => void; ge
 
   return (
     <div className="relative min-w-0 flex-1">
-      <div className="flex h-12 items-center gap-2 rounded-2xl border border-white/15 bg-black/70 px-3.5 text-white shadow-[0_10px_30px_rgba(0,0,0,0.35)] backdrop-blur-xl focus-within:border-[var(--accent)]">
-        <Search size={16} className="shrink-0 text-white/60" />
+      <div className="float-panel flex h-12 items-center gap-2 rounded-2xl px-3.5 text-cream focus-within:!border-[var(--accent)]">
+        <Search size={16} className="shrink-0 text-cream/45" />
         <input
           value={q}
           onChange={(e) => {
@@ -1254,18 +1353,18 @@ function PlaceSearch({ onPick, getBias }: { onPick: (hit: SearchHit) => void; ge
               setOpen(false);
             }
           }}
-          placeholder="Search a place, landmark or lat, lng"
-          className="min-w-0 flex-1 bg-transparent text-[14px] text-white outline-none placeholder:text-white/45"
+          placeholder="Search a city, landmark or address"
+          className="min-w-0 flex-1 bg-transparent text-[14px] text-cream outline-none placeholder:text-cream/40"
         />
-        {loading && <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-white/20 border-t-[var(--accent)]" />}
+        {loading && <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-cream/15 border-t-[var(--accent)]" />}
         {q && !loading && (
-          <button type="button" onClick={() => { setQ(""); setHits([]); }} className="shrink-0 text-white/50 hover:text-white">
+          <button type="button" onClick={() => { setQ(""); setHits([]); }} aria-label="Clear search" className="shrink-0 text-cream/40 hover:text-cream">
             <X size={15} />
           </button>
         )}
       </div>
       {open && hits.length > 0 && (
-        <ul className="absolute left-0 right-0 top-[calc(100%+6px)] z-20 m-0 list-none overflow-hidden rounded-2xl border border-white/15 bg-black/85 p-1 text-white shadow-[0_20px_50px_rgba(0,0,0,0.5)] backdrop-blur-xl">
+        <ul className="float-panel absolute left-0 right-0 top-[calc(100%+6px)] z-20 m-0 list-none overflow-hidden rounded-2xl p-1 text-cream">
           {hits.map((h, i) => (
             <li key={h.id}>
               <button
@@ -1273,11 +1372,11 @@ function PlaceSearch({ onPick, getBias }: { onPick: (hit: SearchHit) => void; ge
                 onMouseEnter={() => setActive(i)}
                 onClick={() => pick(h)}
                 className={`flex w-full flex-col items-start rounded-xl px-3 py-2 text-left transition-colors ${
-                  i === active ? "bg-white/10" : ""
+                  i === active ? "bg-[var(--accent-soft)]" : ""
                 }`}
               >
                 <span className="text-[13.5px]">{h.title}</span>
-                {h.subtitle && <span className="font-mono text-[10px] text-white/50">{h.subtitle}</span>}
+                {h.subtitle && <span className="text-[11.5px] text-cream/50">{h.subtitle}</span>}
               </button>
             </li>
           ))}

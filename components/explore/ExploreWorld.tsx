@@ -6,6 +6,8 @@ import type { ModelFile } from "@/lib/types";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { CommercialLicenseButton } from "@/components/CommercialLicenseButton";
 import Scrubber from "@/components/ui/Scrubber";
+import { BackButton } from "@/components/ui/BackButton";
+import { StepPills } from "@/components/StepPills";
 import { StudioConfigurator } from "@/components/studio/StudioConfigurator";
 import { bounds, formatMeters, shapePolygon, type FrameShape } from "@/lib/explore/geo";
 import { fetchMapData, type OsmData } from "@/lib/explore/osm";
@@ -198,24 +200,24 @@ export function ExploreWorld() {
 
   return (
     <div className="flex h-dvh flex-col bg-base text-cream">
-      <header className="z-30 flex h-16 shrink-0 items-center justify-between gap-3 border-b border-cream/[0.09] bg-deep/70 px-4 backdrop-blur-xl md:px-6">
-        <div className="flex min-w-0 items-center gap-4">
+      <header className="z-30 flex h-16 shrink-0 items-center justify-between gap-3 border-b border-cream/[0.08] bg-deep px-4 md:px-6">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          {phase === "customize" && <BackButton onClick={() => setPhase("map")} />}
           <div className="min-w-0">
-            <div className="font-mono text-[9px] font-bold uppercase tracking-[0.3em]" style={{ color: "var(--accent)" }}>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--accent-text)]">
               City Generator
             </div>
-            <h1 className="m-0 truncate font-display text-[19px] font-medium leading-tight">
-              {placeName || "Pick any place on Earth"}
+            <h1 className="m-0 truncate font-display text-[17px] font-semibold leading-tight">
+              {phase === "map" || phase === "scanning"
+                ? placeName || "Pick a place to print"
+                : placeName || "Custom place"}
             </h1>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-3">
-          <StepPills phase={phase} />
+          <StepPills step={phase === "map" || phase === "scanning" ? 0 : 1} />
           <CommercialLicenseButton compact />
           <ThemeToggle />
-          {/* <Link href="/" className="hidden md:inline-flex">
-            <Logo className="theme-logo h-7" />
-          </Link> */}
         </div>
       </header>
 
@@ -237,7 +239,7 @@ export function ExploreWorld() {
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
-              className="absolute left-1/2 top-20 z-20 flex -translate-x-1/2 items-center gap-3 rounded-full border border-[#e07a5f]/50 bg-deep/90 px-5 py-2.5 font-mono text-[11.5px] text-cream backdrop-blur-md"
+              className="absolute left-1/2 top-20 z-20 flex -translate-x-1/2 items-center gap-3 rounded-full float-panel !border-[#e07a5f]/50 px-5 py-2.5 text-[12.5px] text-cream"
             >
               <span className="h-2 w-2 rounded-full bg-[#e07a5f]" />
               {error}
@@ -254,18 +256,18 @@ export function ExploreWorld() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 z-20 flex items-center justify-center bg-black/45 backdrop-blur-[2px]"
+              className="absolute inset-0 z-20 flex items-center justify-center bg-[rgba(var(--ink-rgb),0.18)] backdrop-blur-[2px]"
             >
-              <div className="flex w-[300px] flex-col items-center gap-4 rounded-2xl border border-cream/[0.14] bg-panel/95 p-6 text-center shadow-2xl">
+              <div className="float-panel flex w-[300px] flex-col items-center gap-4 rounded-2xl p-6 text-center">
                 <div className="relative h-12 w-12">
                   <div className="absolute inset-0 animate-spin rounded-full border-2 border-cream/15 border-t-[color:var(--accent)]" />
-                  <Globe2 className="absolute inset-0 m-auto text-cream/70" size={20} />
+                  <Globe2 className="absolute inset-0 m-auto text-[var(--accent)]" size={20} />
                 </div>
                 <div>
-                  <div className="font-display text-[19px] font-medium">
+                  <div className="font-display text-[17px] font-semibold">
                     {phase === "scanning" ? "Scanning the area" : "Building your model"}
                   </div>
-                  <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-cream/50">{progress}…</div>
+                  <div className="mt-1 text-[12.5px] text-cream/55">{progress}…</div>
                 </div>
                 {phase === "scanning" && (
                   <button
@@ -294,7 +296,6 @@ export function ExploreWorld() {
               onRelief={setRelief}
               terrain={terrain}
               onTerrain={setTerrain}
-              onBack={() => setPhase("map")}
               onGenerate={generate}
               canReopen={!!files}
               onReopen={() => setPhase("studio")}
@@ -302,28 +303,6 @@ export function ExploreWorld() {
           )}
         </AnimatePresence>
       </main>
-    </div>
-  );
-}
-
-function StepPills({ phase }: { phase: Phase }) {
-  const step = phase === "map" || phase === "scanning" ? 0 : 1;
-  return (
-    <div className="hidden items-center gap-1.5 font-mono text-[9.5px] font-bold uppercase tracking-[0.16em] lg:flex">
-      {["Choose place", "Colours", "Studio"].map((s, i) => (
-        <span
-          key={s}
-          className={`rounded-full border px-2.5 py-1 ${
-            i === step
-              ? "border-[var(--accent)] text-[var(--accent)]"
-              : i < step
-                ? "border-cream/25 text-cream/60"
-                : "border-cream/10 text-cream/30"
-          }`}
-        >
-          {String(i + 1).padStart(2, "0")} {s}
-        </span>
-      ))}
     </div>
   );
 }
@@ -340,7 +319,6 @@ function CustomizePanel({
   onRelief,
   terrain,
   onTerrain,
-  onBack,
   onGenerate,
   canReopen,
   onReopen,
@@ -356,7 +334,6 @@ function CustomizePanel({
   onRelief: (v: number) => void;
   terrain: TerrainChoice;
   onTerrain: (t: TerrainChoice) => void;
-  onBack: () => void;
   onGenerate: () => void;
   canReopen: boolean;
   onReopen: () => void;
@@ -371,16 +348,13 @@ function CustomizePanel({
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: 24 }}
       transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-      className="absolute bottom-4 left-4 right-4 top-auto z-20 flex max-h-[70vh] flex-col overflow-hidden rounded-2xl border border-cream/[0.14] bg-panel/95 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl md:bottom-5 md:left-auto md:right-5 md:top-5 md:max-h-none md:w-[360px]"
+      className="float-panel absolute bottom-4 left-4 right-4 top-auto z-20 flex max-h-[70vh] flex-col overflow-hidden rounded-2xl md:bottom-5 md:left-auto md:right-5 md:top-5 md:max-h-none md:w-[360px]"
     >
       <div className="border-b border-cream/[0.09] p-5 pb-4">
-        <div className="mb-1 flex items-center gap-2">
-          <span className="font-mono text-[10px] font-bold uppercase tracking-wider text-[var(--accent)]">02</span>
-          <h3 className="m-0 font-display text-[19px] font-medium">Choose colours</h3>
-        </div>
-        <p className="m-0 font-mono text-[10px] uppercase leading-[1.6] tracking-[0.14em] text-cream/45">
-          {placeName ? `${placeName} · ` : ""}
-          {formatMeters(scan.shape.size)} {scan.shape.kind} · {layers.length} layers found
+        <h3 className="m-0 font-display text-[17px] font-semibold">Customise your model</h3>
+        <p className="m-0 mt-1 text-[12.5px] leading-[1.5] text-cream/55">
+          {formatMeters(scan.shape.size)} {scan.shape.kind} · {layers.length} layers found. Tap a layer to pick its
+          filament colour.
         </p>
       </div>
 
@@ -401,9 +375,9 @@ function CustomizePanel({
                 />
                 <span className="min-w-0 flex-1">
                   <span className="block text-[13.5px]">{l.label}</span>
-                  <span className="block font-mono text-[10px] text-cream/45">{l.detail}</span>
+                  <span className="block text-[11.5px] text-cream/50">{l.detail}</span>
                 </span>
-                <span className="font-mono text-[10px] text-cream/40">{filamentName(hex)}</span>
+                <span className="text-[11.5px] text-cream/45">{filamentName(hex)}</span>
               </button>
               {isOpen && (
                 <div className="border-t border-cream/[0.09] p-3">
@@ -448,22 +422,22 @@ function CustomizePanel({
         {trees && (
           <div className="mt-1 rounded-xl border border-cream/[0.12] bg-cream/[0.03] p-3">
             <div className="mb-1.5 text-[13px]">Tree style</div>
-            <p className="m-0 mb-2.5 font-mono text-[9.5px] uppercase leading-[1.6] tracking-[0.14em] text-cream/40">
-              Planted on mapped trees, woods, parks and lawns · printed {TREE_PRINT_MM} mm tall
+            <p className="m-0 mb-2.5 text-[11.5px] leading-[1.5] text-cream/50">
+              Placed on parks, woods and mapped trees · {TREE_PRINT_MM} mm tall
             </p>
             <TreePicker value={treeId} onChange={onTree} color={colors.trees || "#3f7d3a"} />
           </div>
         )}
 
         {scan.data.lod2 && (
-          <p className="m-0 rounded-xl border border-[var(--accent)]/30 bg-[var(--accent)]/[0.06] p-3 font-mono text-[10px] leading-[1.6] text-cream/60">
+          <p className="m-0 rounded-xl bg-[var(--accent-soft)] p-3 text-[11.5px] leading-[1.5] text-cream/70">
             Measured LOD2 buildings from {scan.data.lod2.name} — {scan.data.lod2.attribution}. Gaps filled from
             OpenStreetMap.
           </p>
         )}
 
         {onlyTerrain && (
-          <p className="m-0 rounded-xl border border-cream/[0.1] p-3 font-mono text-[10px] leading-[1.6] text-cream/50">
+          <p className="m-0 rounded-xl border border-cream/[0.1] p-3 text-[11.5px] leading-[1.5] text-cream/55">
             No buildings, roads or greenery are mapped here — you&apos;ll get the terrain only. Try moving the frame
             closer to a town.
           </p>
@@ -473,9 +447,9 @@ function CustomizePanel({
           <div className="mt-1 flex flex-col gap-3 rounded-xl border border-cream/[0.12] bg-cream/[0.03] p-3">
             <div>
               <div className="mb-1.5 text-[13px]">Terrain shape</div>
-              <p className="m-0 mb-2 font-mono text-[9.5px] uppercase leading-[1.6] tracking-[0.14em] text-cream/40">
-                {Math.round(scan.heights.relief)} m of hills and slopes here — smooth clears small bumps and keeps
-                the slopes, flat levels the ground
+              <p className="m-0 mb-2 text-[11.5px] leading-[1.5] text-cream/50">
+                {Math.round(scan.heights.relief)} m of height change here. Smooth keeps the slopes, flat levels
+                the ground.
               </p>
               <TerrainModePicker value={terrain} onChange={onTerrain} />
             </div>
@@ -490,9 +464,7 @@ function CustomizePanel({
                   decimals={0}
                   onValueChange={onRelief}
                 />
-                <p className="m-0 mt-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-cream/35">
-                  Exaggerate hills so they show up in print
-                </p>
+                <p className="m-0 mt-1.5 text-[11.5px] text-cream/45">Exaggerate hills so they show up in print</p>
               </div>
             )}
           </div>
@@ -503,28 +475,19 @@ function CustomizePanel({
         <button
           type="button"
           onClick={onGenerate}
-          className="w-full rounded-full bg-cream py-3 text-[13.5px] font-medium text-[var(--color-base)] transition-transform hover:scale-[1.02]"
+          className="w-full rounded-full btn-primary py-3 text-[13.5px] transition-transform hover:scale-[1.02]"
         >
-          Generate 3D model →
+          Generate 3D model
         </button>
-        <div className="flex gap-2">
+        {canReopen && (
           <button
             type="button"
-            onClick={onBack}
-            className="flex-1 rounded-full border border-cream/20 py-2.5 text-[12.5px] text-cream/70 hover:bg-cream/5"
+            onClick={onReopen}
+            className="w-full rounded-full border border-cream/[0.14] py-2.5 text-[12.5px] text-cream/70 hover:bg-cream/[0.04]"
           >
-            ← Change area
+            Open the last model without changes
           </button>
-          {canReopen && (
-            <button
-              type="button"
-              onClick={onReopen}
-              className="flex-1 rounded-full border border-cream/20 py-2.5 text-[12.5px] text-cream/70 hover:bg-cream/5"
-            >
-              Back to studio
-            </button>
-          )}
-        </div>
+        )}
       </div>
     </motion.aside>
   );

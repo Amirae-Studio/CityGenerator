@@ -79,7 +79,7 @@ function connect(): Promise<Connection> {
     const mod = await loadSdkModule();
     const sdk = mod.createMakerLabSDK({ appId: APP_ID });
     const ctx = await sdk.init({
-      // The bundle (three.js + MapLibre) is a few MB; give the handshake room.
+      // The bundle (three.js + Mapbox GL JS) is a few MB; give the handshake room.
       timeout: 20000,
       onDisconnect: () => listeners.forEach((l) => l({ type: "disconnect" })),
       onError: (err) => console.error("[MakerLab] SDK runtime error", err),

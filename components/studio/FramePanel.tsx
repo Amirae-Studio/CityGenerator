@@ -77,7 +77,7 @@ export function FramePanel({
         <button
           type="button"
           onClick={() => onEnabled(true)}
-          className="w-full rounded-full bg-cream py-3 text-[13.5px] font-medium text-[var(--color-base)] transition-transform hover:scale-[1.02]"
+          className="w-full rounded-full btn-primary py-3 text-[13.5px] transition-transform hover:scale-[1.02]"
         >
           Add a frame
         </button>
@@ -133,7 +133,7 @@ export function FramePanel({
           <button
             type="button"
             onClick={onShrinkToFit}
-            className="shrink-0 rounded-full bg-cream px-3 py-1 text-[11.5px] font-medium text-[var(--color-base)]"
+            className="shrink-0 rounded-full btn-primary px-3 py-1 text-[11.5px]"
             title="Shrinks the model so model and frame both fit the bed"
           >
             Shrink to fit
@@ -247,7 +247,7 @@ export function FramePanel({
               type="button"
               onClick={() => onOpts({ back: v })}
               className={`rounded-full py-[6px] text-[11.5px] transition-colors ${
-                opts.back === v ? "bg-cream font-medium text-[var(--color-base)]" : "text-cream/55 hover:text-cream"
+                opts.back === v ? "seg-on font-medium" : "text-cream/55 hover:text-cream"
               }`}
             >
               {label}
@@ -305,7 +305,7 @@ export function FramePanel({
                   type="button"
                   onClick={() => onOpts({ labelFont: f })}
                   className={`rounded-full py-[5px] text-[11.5px] transition-colors ${
-                    opts.labelFont === f ? "bg-cream font-medium text-[var(--color-base)]" : "text-cream/55 hover:text-cream"
+                    opts.labelFont === f ? "seg-on font-medium" : "text-cream/55 hover:text-cream"
                   }`}
                   style={{ fontFamily: f === "serif" ? "Georgia, serif" : f === "mono" ? "Menlo, monospace" : undefined }}
                 >
