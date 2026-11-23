@@ -19,7 +19,7 @@ import type { ModelFile } from "@/lib/types";
 import type { GizmoMode } from "./StudioScene";
 import { exportTo3MF, collectTransformedMeshes, type ExtraPlate } from "@/lib/3mfExporter";
 import Scrubber from "../ui/Scrubber";
-import { Building2, Frame, Palette, Road, Ruler, Shrub, SquareDimensions, TreePine } from "lucide-react";
+import { Building2, Eye, EyeOff, Frame, Palette, Road, Ruler, Shrub, SquareDimensions, TreePine } from "lucide-react";
 import { SizePanel, BED_MARGIN, type Dims, type SizeAxis } from "./SizePanel";
 import { FramePanel } from "./FramePanel";
 import { buildFrame, frameSTL, seatHeight, FRAME_DEFAULTS, type FrameBuild, type FrameOptions } from "@/lib/frame";
@@ -29,6 +29,7 @@ import { useMakerLab } from "@/lib/makerlab/MakerLabProvider";
 import { buildObj, captureCover, type ObjPart } from "@/lib/makerlab/obj";
 import type { ExportArtifactInput } from "@/lib/makerlab/types";
 import { CommercialLicenseButton } from "@/components/CommercialLicenseButton";
+import { ROAD_KINDS, roadPartKey, type RoadKind } from "@/lib/explore/roads";
 
 
 // three.js / react-three-fiber load as their own chunk, on entering the Studio.
@@ -155,6 +156,12 @@ export function StudioConfigurator({
   }, [layerSet]);
 
   const [activeColorTab, setActiveColorTab] = useState<string>("trees");
+
+  /** Road kinds present in this model (each is its own "roads-<kind>" part). */
+  const roadKinds = useMemo(
+    () => ROAD_KINDS.filter((k) => modelFiles.some((f) => f.partKey === roadPartKey(k.key))),
+    [modelFiles]
+  );
 
   useEffect(() => {
     if (
@@ -1036,6 +1043,22 @@ export function StudioConfigurator({
                               </button>
                             )}
                           </div>
+                          {roadKinds.length > 0 && !cityCtl.hideRoads && (
+                            <RoadTypesPanel
+                              kinds={roadKinds}
+                              hidden={cityCtl.hiddenRoadKinds}
+                              optimize={cityCtl.optimizeRoads}
+                              onToggle={(kind) =>
+                                setCtl(
+                                  "hiddenRoadKinds",
+                                  cityCtl.hiddenRoadKinds.includes(kind)
+                                    ? cityCtl.hiddenRoadKinds.filter((k) => k !== kind)
+                                    : [...cityCtl.hiddenRoadKinds, kind]
+                                )
+                              }
+                              onOptimize={(v) => setCtl("optimizeRoads", v)}
+                            />
+                          )}
                         </div>
                       </>
                     )}
@@ -1271,6 +1294,85 @@ export function StudioConfigurator({
 }
 
 /* Helper Components */
+
+/**
+ * Road types found in this area, each hideable on its own, plus "Optimize
+ * roads": one switch that keeps only the main network (motorways + main
+ * roads). Hidden roads stay out of the export as well.
+ */
+function RoadTypesPanel({
+  kinds,
+  hidden,
+  optimize,
+  onToggle,
+  onOptimize,
+}: {
+  kinds: { key: RoadKind; label: string; main: boolean }[];
+  hidden: string[];
+  optimize: boolean;
+  onToggle: (kind: RoadKind) => void;
+  onOptimize: (on: boolean) => void;
+}) {
+  const hasMinor = kinds.some((k) => !k.main);
+  const isShown = (k: { key: RoadKind; main: boolean }) => !(optimize && !k.main) && !hidden.includes(k.key);
+  return (
+    <div className="mt-1 flex flex-col gap-2 rounded-xl border border-cream/[0.14] bg-cream/[0.03] p-2.5">
+      <div className="flex items-center justify-between px-0.5">
+        <span className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-cream/45">Road types</span>
+        <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-cream/35">
+          {kinds.filter(isShown).length}/{kinds.length} shown
+        </span>
+      </div>
+
+      {hasMinor && (
+        <div className={`rounded-lg border p-2 ${optimize ? "seg-on border-transparent" : "border-cream/[0.1]"}`}>
+          <SegmentedToggle label="Optimize roads" checked={optimize} onCheckedChange={onOptimize} />
+          <p className="m-0 mt-1.5 font-mono text-[9px] uppercase leading-[1.6] tracking-[0.12em] opacity-70">
+            Main roads only — hides local streets, service roads and paths
+          </p>
+        </div>
+      )}
+
+      <div className="flex flex-col gap-1">
+        {kinds.map((k) => {
+          const forcedOff = optimize && !k.main;
+          const visible = isShown(k);
+          return (
+            <button
+              key={k.key}
+              type="button"
+              disabled={forcedOff}
+              onClick={() => onToggle(k.key)}
+              title={
+                forcedOff
+                  ? "Hidden by Optimize roads"
+                  : visible
+                    ? `Hide ${k.label.toLowerCase()}`
+                    : `Show ${k.label.toLowerCase()}`
+              }
+              className={`flex items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-[12.5px] transition-colors disabled:cursor-not-allowed ${
+                visible ? "text-cream hover:bg-cream/[0.06]" : "text-cream/35 line-through decoration-cream/20 hover:bg-cream/[0.04]"
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                {k.label}
+                {k.main && (
+                  <span
+                    className="rounded-full px-1.5 py-px font-mono text-[8.5px] font-bold uppercase tracking-wider no-underline"
+                    style={{ background: "var(--accent-soft)", color: "var(--accent-text)" }}
+                  >
+                    Main
+                  </span>
+                )}
+              </span>
+              {visible ? <Eye size={14} className="text-cream/55" /> : <EyeOff size={14} />}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function PrinterSelect({
   value,

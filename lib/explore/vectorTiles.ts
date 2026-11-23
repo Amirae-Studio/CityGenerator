@@ -16,6 +16,7 @@ import {
   type Vec2,
 } from "./geo";
 import { clipArea, orient, type Area, type OsmData } from "./osm";
+import { roadKind } from "./roads";
 
 const TILEJSON = "https://tiles.openfreemap.org/planet";
 const Z = 14; // the only zoom that carries every building
@@ -159,7 +160,7 @@ function readTile(tile: VectorTile, tx: number, ty: number, shape: FrameShape, c
     const cls = String(p.class || "");
     const width = ROAD_WIDTH[cls];
     if (!width) return;
-    for (const line of lines(f, sq, L)) data.roads.push({ line, width });
+    for (const line of lines(f, sq, L)) data.roads.push({ line, width, kind: roadKind(cls) });
   });
 
   each("landcover", (f, sq, L) => {

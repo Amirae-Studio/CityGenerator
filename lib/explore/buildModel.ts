@@ -26,6 +26,7 @@ import type { Area, OsmBuilding, OsmData, Roof, RoofShape } from "./osm";
 import type { HeightSampler } from "./elevation";
 import type { MeshBuilding } from "./lod2";
 import type { TreeTemplate } from "./trees";
+import { ROAD_KINDS, roadPartKey } from "./roads";
 import polygonClipping, { type Pair } from "polygon-clipping";
 import * as ClipperLib from "clipper-lib";
 const { intersection } = polygonClipping;
@@ -315,15 +316,13 @@ export type Outline = {
   areas: Area[];
 };
 
-/**
- * Strokes and merges `src`, cuts it to the frame and returns hole-aware areas
- * (outer CCW, holes CW). Pieces and holes under `minArea` m² are dropped.
- */
-function mergeToFrame(src: Outline, ctx: Ctx, minArea: number): Area[] {
-  // Integer grid: 0.005 mm at print size (at least 1 cm), far below a nozzle.
-  const q = Math.max(0.01, 0.005 * ctx.mpm);
-  const toPath = (pts: Vec2[]): ClipperLib.Path => pts.map(([x, y]) => ({ X: Math.round(x / q), Y: Math.round(y / q) }));
+/** Integer grid for Clipper: 0.005 mm at print size (at least 1 cm), far below a nozzle. */
+const gridStep = (ctx: Ctx) => Math.max(0.01, 0.005 * ctx.mpm);
 
+/** Strokes the lines (round joins and caps) and adds the areas, as Clipper paths on the grid. */
+function strokeOutline(src: Outline, ctx: Ctx): ClipperLib.Paths {
+  const q = gridStep(ctx);
+  const toPath = (pts: Vec2[]): ClipperLib.Path => pts.map(([x, y]) => ({ X: Math.round(x / q), Y: Math.round(y / q) }));
   const subject: ClipperLib.Paths = [];
 
   // One offset pass per stroke width (a city has only a handful of widths).
@@ -350,14 +349,39 @@ function mergeToFrame(src: Outline, ctx: Ctx, minArea: number): Area[] {
     subject.push(toPath(orient(a.outer, true)));
     for (const h of a.holes) subject.push(toPath(orient(h, false)));
   }
-  if (!subject.length) return [];
+  return subject;
+}
 
-  // Union of everything (non-zero fill) intersected with the frame, in one pass.
+/**
+ * Merges stroked paths (non-zero union), removes `minus` (e.g. the area
+ * already taken by more important roads), cuts the rest to the frame and
+ * returns hole-aware areas (outer CCW, holes CW). Pieces and holes under
+ * `minArea` m² are dropped.
+ */
+function outlineToAreas(subject: ClipperLib.Paths, ctx: Ctx, minArea: number, minus: ClipperLib.Paths = []): Area[] {
+  if (!subject.length) return [];
+  const q = gridStep(ctx);
+  const frame = orient(ctx.clip, true).map(([x, y]) => ({ X: Math.round(x / q), Y: Math.round(y / q) }));
+
+  // Union ∩ frame, as paths.
+  const inFrame: ClipperLib.Paths = [];
   const c = new ClipperLib.Clipper();
   c.AddPaths(subject, ClipperLib.PolyType.ptSubject, true);
-  c.AddPath(toPath(orient(ctx.clip, true)), ClipperLib.PolyType.ptClip, true);
+  c.AddPath(frame, ClipperLib.PolyType.ptClip, true);
+  c.Execute(ClipperLib.ClipType.ctIntersection, inFrame, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+  if (!inFrame.length) return [];
+
+  // … minus whatever is already taken, as a tree (outers with their holes).
   const tree = new ClipperLib.PolyTree();
-  c.Execute(ClipperLib.ClipType.ctIntersection, tree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+  const d = new ClipperLib.Clipper();
+  d.AddPaths(inFrame, ClipperLib.PolyType.ptSubject, true);
+  if (minus.length) d.AddPaths(minus, ClipperLib.PolyType.ptClip, true);
+  d.Execute(
+    minus.length ? ClipperLib.ClipType.ctDifference : ClipperLib.ClipType.ctUnion,
+    tree,
+    ClipperLib.PolyFillType.pftNonZero,
+    ClipperLib.PolyFillType.pftNonZero
+  );
 
   const fromPath = (p: ClipperLib.Path): Vec2[] => ClipperLib.Clipper.CleanPolygon(p, 1.5).map((v) => [v.X * q, v.Y * q]);
   const out: Area[] = [];
@@ -371,6 +395,11 @@ function mergeToFrame(src: Outline, ctx: Ctx, minArea: number): Area[] {
     out.push({ outer: orient(outer, true), holes });
   }
   return out;
+}
+
+/** Strokes, merges and cuts `src` to the frame (see outlineToAreas). */
+function mergeToFrame(src: Outline, ctx: Ctx, minArea: number): Area[] {
+  return outlineToAreas(strokeOutline(src, ctx), ctx, minArea);
 }
 
 /* ── Buildings ───────────────────────────────────────────────────────── */
@@ -997,7 +1026,8 @@ export async function buildExploreModel(
 ): Promise<ModelFile[]> {
   const ctx = makeCtx(shape, heights, opts.relief);
   const { mpm } = ctx;
-  const layers: { key: ExploreLayer; geom: THREE.BufferGeometry | null }[] = [];
+  /** One GLB per entry; `part` splits a layer into separately hideable pieces (road kinds). */
+  const layers: { key: ExploreLayer; geom: THREE.BufferGeometry | null; part?: { key: string; label: string } }[] = [];
 
   onProgress?.("Sculpting terrain");
   await tick();
@@ -1016,16 +1046,25 @@ export async function buildExploreModel(
 
   onProgress?.("Laying roads");
   await tick();
-  const roads = new TriMesh();
-  roads.anchor = (v) => [v[0], ctx.H(v[0], -v[2]), v[2]];
   const minRoad = 0.7 * mpm;
   const speck = (0.4 * mpm) ** 2; // anything under ~0.4 mm across won't print
-  const roadOutline: Outline = {
-    lines: data.roads.map((r) => ({ line: r.line, width: Math.max(r.width, minRoad) })),
-    areas: [],
-  };
-  for (const a of mergeToFrame(roadOutline, ctx, speck)) drapedArea(roads, a, ctx, 0.45 * mpm, -0.4 * mpm);
-  layers.push({ key: "roads", geom: roads.geometry() });
+  // One mesh per road kind, so the Studio can hide kinds one by one. Kinds go
+  // in priority order and each gives up the area already taken by the ones
+  // before it: junctions stay clean, and hiding footpaths never leaves a hole
+  // in a main road.
+  const taken: ClipperLib.Paths = [];
+  for (const kind of ROAD_KINDS) {
+    const lines = data.roads
+      .filter((r) => (r.kind ?? "local") === kind.key)
+      .map((r) => ({ line: r.line, width: Math.max(r.width, minRoad) }));
+    if (!lines.length) continue;
+    const stroked = strokeOutline({ lines, areas: [] }, ctx);
+    const m = new TriMesh();
+    m.anchor = (v) => [v[0], ctx.H(v[0], -v[2]), v[2]];
+    for (const a of outlineToAreas(stroked, ctx, speck, taken)) drapedArea(m, a, ctx, 0.45 * mpm, -0.4 * mpm);
+    taken.push(...stroked);
+    layers.push({ key: "roads", geom: m.geometry(), part: { key: roadPartKey(kind.key), label: kind.label } });
+  }
 
   onProgress?.("Planting greenery");
   await tick();
@@ -1054,7 +1093,7 @@ export async function buildExploreModel(
   // A frame rotated on the map comes into the Studio squared up with the bed:
   // turn everything back by the frame's rotation (custom outlines have none).
   const turn = shape.kind !== "custom" && shape.rotation ? new THREE.Matrix4().makeRotationY((shape.rotation * Math.PI) / 180) : null;
-  for (const { key, geom: raw } of layers) {
+  for (const { key, geom: raw, part } of layers) {
     if (!raw || !raw.getAttribute("position")?.count) continue;
     if (turn) {
       raw.applyMatrix4(turn);
@@ -1078,7 +1117,7 @@ export async function buildExploreModel(
       geom,
       new THREE.MeshStandardMaterial({ color: "#e9e6df", roughness: 0.6, metalness: 0.05 })
     );
-    mesh.name = key;
+    mesh.name = part?.key ?? key;
     // Exported as glTF extras → userData in the Studio: the terrain's bottom is
     // one flat plane, the only part that moves when the base is thickened.
     if (key === "terrain") mesh.userData.flatBase = true;
@@ -1086,7 +1125,8 @@ export async function buildExploreModel(
     const glb = (await exporter.parseAsync(scene, { binary: true })) as ArrayBuffer;
     geom.dispose();
     const url = URL.createObjectURL(new Blob([glb], { type: "model/gltf-binary" }));
-    files.push({ name: `${key}.glb`, url, ext: "glb", layer: key, isSubPart: false, partKey: key, partName: LAYER_LABELS[key] });
+    const partKey = part?.key ?? key;
+    files.push({ name: `${partKey}.glb`, url, ext: "glb", layer: key, isSubPart: false, partKey, partName: part?.label ?? LAYER_LABELS[key] });
     await tick();
   }
   return files;

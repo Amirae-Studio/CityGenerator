@@ -176,6 +176,10 @@ export type CityControls = {
   water: number; // water · vertical only
   enableWater: boolean; // default false
   hideRoads: boolean;
+  /** Road kinds (lib/explore/roads.ts) hidden one by one in "Hide layers". */
+  hiddenRoadKinds: string[];
+  /** Keep only the main road network (motorways + main roads). */
+  optimizeRoads: boolean;
   hideTrees: boolean;
   hideGrass: boolean;
   // Revit sub-foundation frame layer controls
@@ -200,6 +204,8 @@ export const CITY_DEFAULTS: CityControls = {
   water: 50,
   enableWater: false,
   hideRoads: false,
+  hiddenRoadKinds: [],
+  optimizeRoads: false,
   hideTrees: false,
   hideGrass: false,
   enableRevit: false,

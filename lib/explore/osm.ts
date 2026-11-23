@@ -19,6 +19,7 @@ import {
   type Vec2,
 } from "./geo";
 import polygonClipping, { type Pair } from "polygon-clipping";
+import { roadKind, type RoadKind } from "./roads";
 const { intersection } = polygonClipping;
 
 export { orient };
@@ -49,7 +50,7 @@ export type OsmBuilding = Area & {
   group?: string; // outline + parts of one building share ground and scale together
 };
 
-export type OsmRoad = { line: Vec2[]; width: number };
+export type OsmRoad = { line: Vec2[]; width: number; kind?: RoadKind };
 
 export type OsmData = {
   buildings: OsmBuilding[];
@@ -552,7 +553,7 @@ function parseElements(elements: OsmElement[], origin: LngLat, clip: Vec2[]): Os
       const line = elementLine(el, origin);
       if (!line) continue;
       const w = parseLength(t.width) ?? width;
-      for (const piece of clipPolyline(line, clip)) data.roads.push({ line: piece, width: w });
+      for (const piece of clipPolyline(line, clip)) data.roads.push({ line: piece, width: w, kind: roadKind(t.highway) });
       continue;
     }
 

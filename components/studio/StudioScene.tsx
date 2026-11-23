@@ -15,6 +15,7 @@ const dracoLoader = new DRACOLoader();
 // Decoders ship with the app (public/draco) — no third-party script host.
 dracoLoader.setDecoderPath(new URL("draco/", document.baseURI).href);
 import { MM, DEFAULT_LAYER_COLORS, type CityControls } from "@/lib/studio";
+import { MINOR_ROAD_KINDS } from "@/lib/explore/roads";
 import type { ModelFile } from "@/lib/types";
 
 export type GizmoMode = "translate" | "rotate" | "scale";
@@ -778,6 +779,12 @@ function CityAssembly({
       if (layer) layer.visible = !hidden;
     };
     setVisible("roads", controls.hideRoads);
+    // Road kinds: each is its own child of the roads layer ("roads-local", …).
+    // Hidden ones also drop out of the export, which only takes visible meshes.
+    const hiddenRoads = new Set<string>(controls.optimizeRoads ? MINOR_ROAD_KINDS : controls.hiddenRoadKinds);
+    object.getObjectByName("roads")?.children.forEach((part) => {
+      if (part.name.startsWith("roads-")) part.visible = !hiddenRoads.has(part.name.slice("roads-".length));
+    });
     setVisible("trees", controls.hideTrees);
     setVisible("grass", controls.hideGrass);
     setVisible("water", !controls.enableWater);
