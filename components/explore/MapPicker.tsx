@@ -7,11 +7,39 @@ import type {
 } from "mapbox-gl";
 // CSP build: its web worker is a real file served from 'self' instead of a
 // blob: URL, so MakerLab's strict CSP (worker-src 'self') allows it.
-import mapboxgl from "mapbox-gl/dist/mapbox-gl-csp.js";
+import type MapboxGL from "mapbox-gl";
+import type { Marker } from "mapbox-gl";
 import mapboxWorkerUrl from "mapbox-gl/dist/mapbox-gl-csp-worker.js?url";
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-csp-worker.js?url";
 import "mapbox-gl/dist/mapbox-gl.css";
+import "maplibre-gl/dist/maplibre-gl.css";
 
-mapboxgl.workerUrl = mapboxWorkerUrl;
+/*
+ * Two map engines: Mapbox GL (Mapbox maps) and MapLibre (the free map —
+ * Mapbox GL's open fork, same API for everything used here). They must never
+ * both be loaded at once: each registers its classes on shared globals for
+ * worker messaging, and together they corrupt each other ("reading 'omit'").
+ * So each is imported only when needed, and the CSP builds keep their workers
+ * as real files served from 'self'.
+ */
+type Engine = typeof MapboxGL;
+const engines: Partial<Record<"mapbox" | "free", Engine>> = {};
+async function loadEngine(p: "mapbox" | "free"): Promise<Engine> {
+  if (engines[p]) return engines[p]!;
+  if (p === "mapbox") {
+    const gl = (await import("mapbox-gl/dist/mapbox-gl-csp.js")).default;
+    gl.workerUrl = mapboxWorkerUrl;
+    if (MAPBOX_TOKEN) gl.accessToken = MAPBOX_TOKEN;
+    engines.mapbox = gl;
+  } else {
+    const gl = (await import("maplibre-gl/dist/maplibre-gl-csp.js")).default;
+    gl.setWorkerUrl(maplibreWorkerUrl);
+    // MapLibre is typed as Mapbox GL: the calls made here exist in both; the
+    // Mapbox-only ones (Standard config, emissive strength) are guarded.
+    engines.free = gl as unknown as Engine;
+  }
+  return engines[p]!;
+}
 import {
   Circle,
   Crosshair,
@@ -61,7 +89,6 @@ import { PRINT_MM } from "@/lib/explore/buildModel";
  * top of whatever the Studio style says.
  */
 const MAPBOX_TOKEN: string | undefined = import.meta.env.NEXT_PUBLIC_MAPBOX_TOKEN || undefined;
-if (MAPBOX_TOKEN) mapboxgl.accessToken = MAPBOX_TOKEN;
 
 /** Accepts "user/styleId" or a "mapbox://styles/user/styleId" URL. */
 function styleUrl(v?: string) {
@@ -72,8 +99,90 @@ const STREET_STYLE = styleUrl(import.meta.env.NEXT_PUBLIC_MAPBOX_STREET_STYLE) ?
 const SATELLITE_STYLE =
   styleUrl(import.meta.env.NEXT_PUBLIC_MAPBOX_SATELLITE_STYLE) ?? "mapbox://styles/mapbox/standard-satellite";
 
-/** What's missing for the map to show, or null when it's ready. */
-const SETUP_ISSUE: string | null = MAPBOX_TOKEN ? null : "NEXT_PUBLIC_MAPBOX_TOKEN is not set";
+/*
+ * Which map to use: Mapbox (above) or the free map.
+ *
+ * - NEXT_PUBLIC_USE_MAPBOX=false → always the free map.
+ * - NEXT_PUBLIC_USE_MAPBOX=true, or unset → Mapbox when a token is set,
+ *   otherwise the free map.
+ * - Mapbox refusing the token (bad token, billing/free limit reached, rate
+ *   limit) or missing the style switches to the free map on its own, so the
+ *   map never goes blank.
+ */
+type Provider = "mapbox" | "free";
+const USE_MAPBOX_FLAG = (import.meta.env.NEXT_PUBLIC_USE_MAPBOX ?? "").trim().toLowerCase();
+const MAPBOX_DISABLED = ["false", "0", "no", "off"].includes(USE_MAPBOX_FLAG);
+const START_PROVIDER: Provider = MAPBOX_TOKEN && !MAPBOX_DISABLED ? "mapbox" : "free";
+
+
+/*
+ * Free basemaps (no key, no billing), with the same neutral display:
+ * - Satellite: Esri World Imagery (photos only, no labels or borders) plus
+ *   Esri's roads-only reference layer.
+ * - Street: OpenFreeMap vector tiles, minus every border line and every
+ *   country, state and sea name; capitals aren't marked.
+ */
+const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services";
+type AnyStyle = Record<string, unknown>;
+const FREE_SATELLITE_STYLE: AnyStyle = {
+  version: 8,
+  sources: {
+    imagery: {
+      type: "raster",
+      tiles: [`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`],
+      tileSize: 256,
+      maxzoom: 19,
+      attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
+    },
+    roads: {
+      type: "raster",
+      tiles: [`${ESRI}/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}`],
+      tileSize: 256,
+      maxzoom: 19,
+    },
+  },
+  layers: [
+    { id: "imagery", type: "raster", source: "imagery" },
+    { id: "roads", type: "raster", source: "roads", paint: { "raster-opacity": 0.75 } },
+  ],
+};
+/** Shown for the moment the free street style is being fetched. */
+const BLANK_STYLE: AnyStyle = {
+  version: 8,
+  sources: {},
+  layers: [{ id: "bg", type: "background", paint: { "background-color": "#eef3f0" } }],
+};
+
+const FREE_STREET_URL = "https://tiles.openfreemap.org/styles/liberty";
+let freeStreetPromise: Promise<AnyStyle> | null = null;
+
+function isPolitical(layer: { id: string; "source-layer"?: string }) {
+  const src = layer["source-layer"];
+  if (src === "boundary" || src === "water_name") return true; // border lines, sea names
+  return /^label_(country|state)/.test(layer.id);
+}
+
+/** OpenFreeMap's street style with borders and political names removed. */
+function freeStreetStyle(): Promise<AnyStyle> {
+  freeStreetPromise ??= (async () => {
+    const res = await fetch(FREE_STREET_URL);
+    if (!res.ok) throw new Error(`Street map style ${res.status}`);
+    const style = (await res.json()) as { layers: ({ id: string; "source-layer"?: string; layout?: AnyStyle })[] } & AnyStyle;
+    style.layers = style.layers
+      .filter((l) => !isPolitical(l))
+      // Capitals get a star; drop it so no city is marked as anyone's capital.
+      .map((l) => (l.id === "label_city_capital" ? { ...l, layout: { ...l.layout, "icon-image": "" } } : l));
+    return style;
+  })().catch((err) => {
+    freeStreetPromise = null;
+    throw err;
+  });
+  return freeStreetPromise;
+}
+
+/** What's missing for the map to show, or null when it's ready. The free map
+ *  needs no setup, so this is only ever about Mapbox. */
+const SETUP_ISSUE: string | null = null;
 
 /** Standard's style fragment that the switches below apply to. */
 const BASEMAP = "basemap";
@@ -242,8 +351,8 @@ export function MapPicker({
   const containerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MBMap | null>(null);
-  const labelRef = useRef<mapboxgl.Marker | null>(null);
-  const gripRef = useRef<mapboxgl.Marker | null>(null);
+  const labelRef = useRef<Marker | null>(null);
+  const gripRef = useRef<Marker | null>(null);
   const shapeRef = useRef(shape);
   shapeRef.current = shape;
   const lockedRef = useRef(locked);
@@ -255,6 +364,10 @@ export function MapPicker({
   const ready = styleGen > 0;
   const [satellite, setSatellite] = useState(false); // street map by default
   const satelliteRef = useRef(satellite);
+  /** Mapbox or the free map; switches to free on its own if Mapbox fails. */
+  const [provider, setProvider] = useState<Provider>(START_PROVIDER);
+  /** Bumped when a map engine finishes loading, so the map effect runs again. */
+  const [enginesLoaded, setEnginesLoaded] = useState(0);
   /** A setup or Mapbox problem to show over the map (bad token, missing style). */
   const [mapIssue, setMapIssue] = useState<string | null>(SETUP_ISSUE);
   const [grab, setGrab] = useState<Grab | null>(null);
@@ -453,29 +566,71 @@ export function MapPicker({
     const el = containerRef.current;
     const px = Math.min(el.clientWidth, el.clientHeight) || 600;
     const zoom = zoomForSize(shapeRef.current.size, shapeRef.current.center[1], px);
-    const map = new mapboxgl.Map({
+    const isMapbox = provider === "mapbox";
+    const gl = engines[provider];
+    if (!gl) {
+      // Load this provider's engine first; the effect runs again once it's in.
+      let alive = true;
+      loadEngine(provider)
+        .then(() => alive && setEnginesLoaded((n) => n + 1))
+        .catch((err: Error) => {
+          if (!alive) return;
+          if (provider === "mapbox") setProvider("free");
+          else setMapIssue(`Couldn't load the map: ${err.message}`);
+        });
+      return () => {
+        alive = false;
+      };
+    }
+    // A new map (first run, or after switching provider) has no overlay yet.
+    setStyleGen(0);
+    const firstStyle = isMapbox
+      ? satelliteRef.current
+        ? SATELLITE_STYLE
+        : STREET_STYLE
+      : satelliteRef.current
+        ? FREE_SATELLITE_STYLE
+        : BLANK_STYLE; // the free street style is fetched just below
+    const map = new gl.Map({
       container: el,
-      style: satelliteRef.current ? SATELLITE_STYLE : STREET_STYLE,
-      config: { [BASEMAP]: neutralConfig(zoom) },
+      style: firstStyle as string,
+      ...(isMapbox
+        ? {
+            config: { [BASEMAP]: neutralConfig(zoom) },
+            // Flat top-down map: the frame is drawn on the ground in Web Mercator.
+            projection: "mercator" as const,
+          }
+        : {}),
       center: shapeRef.current.center,
       zoom,
       maxZoom: 19,
-      // Flat top-down map: the frame is drawn on the ground in Web Mercator.
-      projection: "mercator",
       attributionControl: false,
       dragRotate: false,
       pitchWithRotate: false,
     });
     mapRef.current = map;
     map.touchZoomRotate.disableRotation();
-    map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "top-right");
-    map.addControl(new mapboxgl.ScaleControl({ unit: "metric" }), "bottom-left");
-    map.addControl(new mapboxgl.AttributionControl({ compact: true }), "bottom-right");
+    map.addControl(new gl.NavigationControl({ showCompass: false }), "top-right");
+    map.addControl(new gl.ScaleControl({ unit: "metric" }), "bottom-left");
+    map.addControl(new gl.AttributionControl({ compact: true }), "bottom-right");
+
+    /** Mapbox failed (refused token, free limit or billing, missing style):
+     *  carry on with the free map instead of leaving a broken one. */
+    let fellBack = false;
+    const fallBackToFree = (why: string) => {
+      if (!isMapbox || fellBack) return;
+      fellBack = true;
+      console.warn(`[MapPicker] ${why} — switching to the free map`);
+      setMapIssue(null);
+      setProvider("free");
+    };
 
     // Place names follow the zoom (see PLACE_LABEL_MIN_ZOOM): flip the switch
     // only when crossing the threshold, since each change re-lays out labels.
     let placeLabels = neutralConfig(zoom).showPlaceLabels;
     const applyNeutral = (force = false) => {
+      // Mapbox Standard's switches; the free styles are neutral already.
+      if (!isMapbox) return;
       const want = neutralConfig(map.getZoom());
       if (!force && want.showPlaceLabels === placeLabels) return;
       placeLabels = want.showPlaceLabels;
@@ -544,7 +699,19 @@ export function MapPicker({
       const { error } = e as unknown as { error?: { status?: number; url?: string; message?: string } };
       if (!error) return;
       lastError = error.message || String(error);
+      if (import.meta.env.DEV) console.debug("[MapPicker] map error", error.status, error.url?.replace(/access_token=[^&]+/, "…"), error.message);
       const which = satelliteRef.current ? "satellite" : "street";
+      const fromMapbox = !!error.url?.includes("api.mapbox.com");
+      // 401/403: bad or restricted token, or the account is off (free limit
+      // reached without billing). 402: payment required. 429: rate limited.
+      // 404 on a style: wrong style ID. All mean Mapbox can't serve this map.
+      if (
+        fromMapbox &&
+        ([401, 402, 403, 429].includes(error.status ?? 0) || (error.status === 404 && error.url!.includes("/styles/")))
+      ) {
+        fallBackToFree(`Mapbox answered ${error.status}`);
+        return;
+      }
       if (error.url?.includes("api.mapbox.com") && (error.status === 401 || error.status === 403)) {
         report(`Mapbox refused the token (${error.status}). Check its URL restrictions and that the Mapbox account is active, with billing set up`);
       } else if (error.url?.includes("api.mapbox.com") && error.status === 404) {
@@ -566,14 +733,27 @@ export function MapPicker({
     // Last resort: the style never finished loading, with no error event.
     const watchdog = setTimeout(() => {
       if (styleLoaded) return;
+      if (isMapbox) {
+        fallBackToFree("Mapbox didn't load within 20 seconds");
+        return;
+      }
       if (!issues.length) report("The map didn't finish loading within 20 seconds");
       void probe();
     }, 20000);
 
+    // Free street map: its style is fetched (and cleaned of political layers) first.
+    if (!isMapbox && !satelliteRef.current) {
+      freeStreetStyle()
+        .then((s) => {
+          if (mapRef.current === map && !satelliteRef.current) map.setStyle(s as never, { diff: false } as never);
+        })
+        .catch((err: Error) => report(`Couldn't load the street map: ${err.message}`));
+    }
+
     const badge = document.createElement("div");
     badge.className =
       "pointer-events-none whitespace-nowrap rounded-full bg-white px-2.5 py-1 font-mono text-[10.5px] font-medium tracking-wide text-[#15201a] shadow-lg";
-    labelRef.current = new mapboxgl.Marker({ element: badge, anchor: "top", offset: [0, 12] })
+    labelRef.current = new gl.Marker({ element: badge, anchor: "top", offset: [0, 12] })
       .setLngLat(shapeRef.current.center)
       .addTo(map);
 
@@ -583,7 +763,7 @@ export function MapPicker({
       "pointer-events-none flex h-8 w-8 items-center justify-center rounded-full border-2 border-white bg-[#1fa463] text-white shadow-lg";
     grip.innerHTML =
       '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M2 12h20M9 5l3-3 3 3M9 19l3 3 3-3M5 9l-3 3 3 3M19 9l3 3-3 3"/></svg>';
-    gripRef.current = new mapboxgl.Marker({ element: grip }).setLngLat(shapeRef.current.center).addTo(map);
+    gripRef.current = new gl.Marker({ element: grip }).setLngLat(shapeRef.current.center).addTo(map);
 
     // The frame overlay lives in the style, so it is (re)added each time a
     // style finishes loading: on start, and after switching street/satellite.
@@ -657,9 +837,11 @@ export function MapPicker({
       });
       // Standard lights the scene (e.g. a dawn preset); keep the frame
       // overlay at full brightness regardless.
-      for (const id of ["mask", "frame-fill"]) map.setPaintProperty(id, "fill-emissive-strength", 1);
-      for (const id of ["frame-glow", "frame-line", "guides", "draft-line"]) map.setPaintProperty(id, "line-emissive-strength", 1);
-      for (const id of ["vertices", "handles"]) map.setPaintProperty(id, "circle-emissive-strength", 1);
+      if (isMapbox) {
+        for (const id of ["mask", "frame-fill"]) map.setPaintProperty(id, "fill-emissive-strength", 1);
+        for (const id of ["frame-glow", "frame-line", "guides", "draft-line"]) map.setPaintProperty(id, "line-emissive-strength", 1);
+        for (const id of ["vertices", "handles"]) map.setPaintProperty(id, "circle-emissive-strength", 1);
+      }
       setStyleGen((g) => g + 1);
     });
 
@@ -816,7 +998,7 @@ export function MapPicker({
       map.remove();
       mapRef.current = null;
     };
-  }, [finishDrawing, renderDraft, renderHandles, checkOffscreen]);
+  }, [finishDrawing, renderDraft, renderHandles, checkOffscreen, provider, enginesLoaded]);
 
   // Redraw the frame, mask, handles and size badge whenever the shape changes.
   useEffect(() => {
@@ -926,12 +1108,23 @@ export function MapPicker({
     satelliteRef.current = satellite;
     const map = mapRef.current;
     if (!map) return;
-    map.setStyle(satellite ? SATELLITE_STYLE : STREET_STYLE, {
-      config: { [BASEMAP]: neutralConfig(map.getZoom()) },
-      localFontFamily: undefined,
-      localIdeographFontFamily: undefined,
-    });
-  }, [satellite]);
+    if (provider === "mapbox") {
+      map.setStyle(satellite ? SATELLITE_STYLE : STREET_STYLE, {
+        config: { [BASEMAP]: neutralConfig(map.getZoom()) },
+        localFontFamily: undefined,
+        localIdeographFontFamily: undefined,
+      });
+    } else if (satellite) {
+      // diff: false → a full reload, so style.load re-adds the frame overlay.
+      map.setStyle(FREE_SATELLITE_STYLE as never, { diff: false } as never);
+    } else {
+      freeStreetStyle()
+        .then((s) => {
+          if (mapRef.current === map && !satelliteRef.current) map.setStyle(s as never, { diff: false } as never);
+        })
+        .catch((err: Error) => setMapIssue(`Couldn't load the street map: ${err.message}`));
+    }
+  }, [satellite, provider]);
 
   /** Search result: the frame moves to the place and the camera follows. */
   function flyToHit(hit: SearchHit) {
@@ -984,7 +1177,7 @@ export function MapPicker({
         <div className="absolute left-4 right-4 top-4 z-10 flex flex-col gap-2 md:right-auto md:w-[500px]">
           <div className="flex items-start gap-2">
             <PlaceSearch onPick={flyToHit} getBias={getBias} />
-            {MAPBOX_TOKEN && (
+            {(
               <button
                 type="button"
                 onClick={() => setSatellite((s) => !s)}

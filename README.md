@@ -121,7 +121,22 @@ lists the CSP the host actually served.
 Send MakerLab the commercial license details (key `commercial_eeee`, name,
 description, price). See Paid Features › Step 1.
 
-## Map setup (required)
+## Map setup
+
+There are two maps, chosen by `NEXT_PUBLIC_USE_MAPBOX` in `.env`:
+
+| `NEXT_PUBLIC_USE_MAPBOX` | Map |
+| --- | --- |
+| `false` | Always the **free map**: MapLibre + OpenFreeMap streets + Esri satellite. No account, no key, no billing. |
+| `true` or empty | **Mapbox** (below) when `NEXT_PUBLIC_MAPBOX_TOKEN` is set, otherwise the free map. |
+
+If Mapbox stops serving the map (token refused, free limit or billing, rate
+limit, missing style, or it doesn't load in 20 s), the app switches to the free
+map on its own — the map never goes blank. Only one map engine is loaded at a
+time (Mapbox GL and MapLibre break each other when both are on the page).
+Both maps keep the neutral display: no borders, no country/state/sea names.
+
+### Mapbox
 
 The map is **Mapbox GL JS** drawing **Mapbox Standard**, the same engine and
 data Mapbox Studio uses: small map-data tiles drawn in the browser, 3D

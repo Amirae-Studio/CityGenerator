@@ -24,6 +24,7 @@ import { SizePanel, BED_MARGIN, type Dims, type SizeAxis } from "./SizePanel";
 import { FramePanel } from "./FramePanel";
 import { buildFrame, frameSTL, seatHeight, FRAME_DEFAULTS, type FrameBuild, type FrameOptions } from "@/lib/frame";
 import SegmentedToggle from "../ui/Switch";
+import { Step, SubSection } from "../ui/Step";
 import { TerrainModePicker, type TerrainChoice } from "@/components/explore/TerrainModePicker";
 import { useMakerLab } from "@/lib/makerlab/MakerLabProvider";
 import { buildObj, captureCover, type ObjPart } from "@/lib/makerlab/obj";
@@ -877,195 +878,199 @@ export function StudioConfigurator({
 
                 {/* Tab 3: Manipulate City */}
                 {activeTab === "city" && (
-                  <div className="flex flex-col gap-4">
+                  <div className="flex flex-col gap-5">
                     {layerSet.size === 0 ? (
-                      <p className="m-0 font-mono text-[9.5px] leading-[1.7] uppercase tracking-[0.14em] text-cream/30">
-                        Layer controls appear once this tile&apos;s city layers are loaded
+                      <p className="m-0 text-[12.5px] leading-snug text-cream/50">
+                        The controls appear once the model has loaded.
                       </p>
                     ) : (
-                      <>
-                      {layerSet.has("main-building") && (
-                          <div className="flex flex-col gap-3 rounded-xl border border-cream/[0.12] bg-cream/[0.03] p-3">
-                            <span className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-cream/45">
-                              Large buildings
-                            </span>
-                            <ResettableScrubber
-                              label="Size"
-                              value={cityCtl.large}
-                              min={50}
-                              max={150}
-                              onValueChange={(v) => setCtl("large", v)}
-                              onReset={() => resetCtl("large")}
-                              atDefault={atDefault("large")}
-                            />
-                            <ResettableScrubber
-                              label="Height"
-                              value={cityCtl.largeHeight}
-                              min={50}
-                              max={200}
-                              onValueChange={(v) => setCtl("largeHeight", v)}
-                              onReset={() => resetCtl("largeHeight")}
-                              atDefault={atDefault("largeHeight")}
-                            />
-                          </div>
-                        )}
-                        {layerSet.has("small-building") && (
-                          <ResettableScrubber
-                            label="Small buildings"
-                            value={cityCtl.small}
-                            min={50}
-                            max={150}
-                            onValueChange={(v) => setCtl("small", v)}
-                            onReset={() => resetCtl("small")}
-                            atDefault={atDefault("small")}
-                          />
-                        )}
-                        
-                        {terrainControl && (
-                          <div className="flex flex-col gap-3 rounded-xl border border-cream/[0.12] bg-cream/[0.03] p-3">
-                            <div className="flex items-center justify-between">
-                              <span className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-cream/45">
-                                Terrain shape
-                              </span>
-                              {terrainControl.busy && (
-                                <span className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--accent)]">
-                                  <span className="h-2.5 w-2.5 animate-spin rounded-full border border-cream/20 border-t-[var(--accent)]" />
-                                  Rebuilding
-                                </span>
-                              )}
-                            </div>
-                            <TerrainModePicker
-                              value={terrainControl}
-                              onChange={(t) => terrainControl.onChange(t)}
-                            />
-                          </div>
-                        )}
+                      (() => {
+                        // Steps are numbered in order, skipping ones this model has nothing for.
+                        let n = 0;
+                        const hasBuildings = layerSet.has("main-building") || layerSet.has("small-building");
+                        const hasGround = !!terrainControl || layerSet.has("terrain");
+                        const hasDetails = layerSet.has("roads") || layerSet.has("trees") || layerSet.has("water");
+                        const hasHide = layerSet.has("roads") || layerSet.has("trees") || layerSet.has("grass");
+                        return (
+                          <>
+                            {hasBuildings && (
+                              <Step n={++n} title="Buildings" hint="100 = real size">
+                                {layerSet.has("main-building") && (
+                                  <SubSection label="Big landmarks">
+                                    <ResettableScrubber
+                                      label="Size"
+                                      value={cityCtl.large}
+                                      min={50}
+                                      max={150}
+                                      onValueChange={(v) => setCtl("large", v)}
+                                      onReset={() => resetCtl("large")}
+                                      atDefault={atDefault("large")}
+                                    />
+                                    <ResettableScrubber
+                                      label="Height"
+                                      value={cityCtl.largeHeight}
+                                      min={50}
+                                      max={200}
+                                      onValueChange={(v) => setCtl("largeHeight", v)}
+                                      onReset={() => resetCtl("largeHeight")}
+                                      atDefault={atDefault("largeHeight")}
+                                    />
+                                  </SubSection>
+                                )}
+                                {layerSet.has("small-building") && (
+                                  <SubSection label="Other buildings">
+                                    <ResettableScrubber
+                                      label="Height"
+                                      value={cityCtl.small}
+                                      min={50}
+                                      max={150}
+                                      onValueChange={(v) => setCtl("small", v)}
+                                      onReset={() => resetCtl("small")}
+                                      atDefault={atDefault("small")}
+                                    />
+                                  </SubSection>
+                                )}
+                              </Step>
+                            )}
 
-                        {layerSet.has("terrain") && (
-                          <ResettableScrubber
-                            label="Terrain height"
-                            value={cityCtl.terrain}
-                            min={20}
-                            max={500}
-                            onValueChange={(v) => setCtl("terrain", v)}
-                            onReset={() => resetCtl("terrain")}
-                            atDefault={atDefault("terrain")}
-                          />
-                        )}
-                        {layerSet.has("roads") && (
-                          <ResettableScrubber
-                            label="Road scale"
-                            value={cityCtl.roads}
-                            min={50}
-                            max={200}
-                            onValueChange={(v) => setCtl("roads", v)}
-                            onReset={() => resetCtl("roads")}
-                            atDefault={atDefault("roads")}
-                          />
-                        )}
-                        {layerSet.has("trees") && (
-                          <ResettableScrubber
-                            label="Tree scale"
-                            value={cityCtl.trees}
-                            min={50}
-                            max={150}
-                            onValueChange={(v) => setCtl("trees", v)}
-                            onReset={() => resetCtl("trees")}
-                            atDefault={atDefault("trees")}
-                          />
-                        )}
-                        {layerSet.has("water") && (
-                          <div className="flex flex-col gap-3 rounded-xl border border-cream/[0.12] bg-cream/[0.03] p-3">
-                            <SegmentedToggle
-                              label="Water layer"
-                              checked={cityCtl.enableWater}
-                              onCheckedChange={(v) => setCtl("enableWater", v)}
-                            />
-                            {cityCtl.enableWater && (
-                              <ResettableScrubber
-                                label="Water scale"
-                                value={cityCtl.water}
-                                min={50}
-                                max={200}
-                                onValueChange={(v) => setCtl("water", v)}
-                                onReset={() => resetCtl("water")}
-                                atDefault={atDefault("water")}
-                              />
-                            )}
-                          </div>
-                        )}
-
-                        <div className="flex flex-col gap-2 pt-2 border-t border-cream/[0.09]">
-                          <span className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-cream/45">
-                            Hide Layers
-                          </span>
-                          <div className="grid grid-cols-3 gap-1.5 rounded-xl border border-cream/[0.14] p-1.5 bg-cream/[0.03]">
-                            {layerSet.has("roads") && (
-                              <button
-  type="button"
-  onClick={() => setCtl("hideRoads", !cityCtl.hideRoads)}
-  className={`flex items-center justify-center gap-1.5 rounded-lg py-2 px-1 text-center font-mono text-[10.5px] font-bold uppercase tracking-wider transition-all duration-200 truncate ${
-    cityCtl.hideRoads
-      ? "seg-on"
-      : "text-cream/65 hover:text-cream hover:bg-cream/[0.06]"
-  }`}
->
-  <span>Roads</span>
-  <Road size={14} />
-</button>
-                            )}
-                            {layerSet.has("trees") && (
-                             <button
-  type="button"
-  onClick={() => setCtl("hideTrees", !cityCtl.hideTrees)}
-  className={`flex items-center justify-center gap-1.5 rounded-lg py-2 px-1 text-center font-mono text-[10.5px] font-bold uppercase tracking-wider transition-all duration-200 truncate ${
-    cityCtl.hideTrees
-      ? "seg-on"
-      : "text-cream/65 hover:text-cream hover:bg-cream/[0.06]"
-  }`}
->
-  <span>Trees</span>
-  <TreePine size={14} />
-</button>
-                            )}
-                            {layerSet.has("grass") && (
-                             <button
-  type="button"
-  onClick={() => setCtl("hideGrass", !cityCtl.hideGrass)}
-  className={`flex items-center justify-center gap-1.5 rounded-lg py-2 px-1 text-center font-mono text-[10.5px] font-bold uppercase tracking-wider transition-all duration-200 truncate ${
-    cityCtl.hideGrass
-      ? "seg-on"
-                                    : "text-cream/65 hover:text-cream hover:bg-cream/[0.06]"
-                                }`}
+                            {hasGround && (
+                              <Step
+                                n={++n}
+                                title="Ground"
+                                hint={
+                                  terrainControl?.busy ? (
+                                    <span className="flex items-center gap-1.5 text-[var(--accent-text)]">
+                                      <span className="h-2.5 w-2.5 animate-spin rounded-full border border-cream/20 border-t-[var(--accent)]" />
+                                      Rebuilding
+                                    </span>
+                                  ) : undefined
+                                }
                               >
-                                <span>Grass</span>
-  <Shrub  size={14}/>
-                              </button>
+                                {terrainControl && (
+                                  <SubSection label="Hills">
+                                    <TerrainModePicker value={terrainControl} onChange={(t) => terrainControl.onChange(t)} />
+                                  </SubSection>
+                                )}
+                                {layerSet.has("terrain") && (
+                                  <SubSection label="Ground thickness">
+                                    <ResettableScrubber
+                                      label="Height"
+                                      value={cityCtl.terrain}
+                                      min={20}
+                                      max={500}
+                                      onValueChange={(v) => setCtl("terrain", v)}
+                                      onReset={() => resetCtl("terrain")}
+                                      atDefault={atDefault("terrain")}
+                                    />
+                                  </SubSection>
+                                )}
+                              </Step>
                             )}
-                          </div>
-                          {roadKinds.length > 0 && !cityCtl.hideRoads && (
-                            <RoadTypesPanel
-                              kinds={roadKinds}
-                              hidden={cityCtl.hiddenRoadKinds}
-                              optimize={cityCtl.optimizeRoads}
-                              onToggle={(kind) =>
-                                setCtl(
-                                  "hiddenRoadKinds",
-                                  cityCtl.hiddenRoadKinds.includes(kind)
-                                    ? cityCtl.hiddenRoadKinds.filter((k) => k !== kind)
-                                    : [...cityCtl.hiddenRoadKinds, kind]
-                                )
-                              }
-                              onOptimize={(v) => setCtl("optimizeRoads", v)}
-                            />
-                          )}
-                        </div>
-                      </>
-                    )}
 
-                    <p className="m-0 border-t border-cream/[0.09] pt-3 font-mono text-[9.5px] leading-[1.7] uppercase tracking-[0.14em] text-cream/30">
-                      Non-destructive — hidden layers stay out of the print
-                    </p>
+                            {hasDetails && (
+                              <Step n={++n} title="Roads, trees & water">
+                                {layerSet.has("roads") && (
+                                  <ResettableScrubber
+                                    label="Road thickness"
+                                    value={cityCtl.roads}
+                                    min={50}
+                                    max={200}
+                                    onValueChange={(v) => setCtl("roads", v)}
+                                    onReset={() => resetCtl("roads")}
+                                    atDefault={atDefault("roads")}
+                                  />
+                                )}
+                                {layerSet.has("trees") && (
+                                  <ResettableScrubber
+                                    label="Tree size"
+                                    value={cityCtl.trees}
+                                    min={50}
+                                    max={150}
+                                    onValueChange={(v) => setCtl("trees", v)}
+                                    onReset={() => resetCtl("trees")}
+                                    atDefault={atDefault("trees")}
+                                  />
+                                )}
+                                {layerSet.has("water") && (
+                                  <div className="flex flex-col gap-3 rounded-lg border border-cream/[0.12] p-2.5">
+                                    <SegmentedToggle
+                                      label="Show water"
+                                      checked={cityCtl.enableWater}
+                                      onCheckedChange={(v) => setCtl("enableWater", v)}
+                                    />
+                                    {cityCtl.enableWater && (
+                                      <ResettableScrubber
+                                        label="Water thickness"
+                                        value={cityCtl.water}
+                                        min={50}
+                                        max={200}
+                                        onValueChange={(v) => setCtl("water", v)}
+                                        onReset={() => resetCtl("water")}
+                                        atDefault={atDefault("water")}
+                                      />
+                                    )}
+                                  </div>
+                                )}
+                              </Step>
+                            )}
+
+                            {hasHide && (
+                              <Step n={++n} title="Show or hide" hint="tap to hide">
+                                <div className="grid grid-cols-3 gap-1.5">
+                                  {(
+                                    [
+                                      ["roads", "Roads", "hideRoads", Road],
+                                      ["trees", "Trees", "hideTrees", TreePine],
+                                      ["grass", "Grass", "hideGrass", Shrub],
+                                    ] as const
+                                  )
+                                    .filter(([layer]) => layerSet.has(layer))
+                                    .map(([layer, label, key, Icon]) => {
+                                      const hidden = cityCtl[key];
+                                      return (
+                                        <button
+                                          key={layer}
+                                          type="button"
+                                          aria-pressed={!hidden}
+                                          onClick={() => setCtl(key, !hidden)}
+                                          title={hidden ? `Show ${label.toLowerCase()}` : `Hide ${label.toLowerCase()}`}
+                                          className={`flex flex-col items-center gap-1 rounded-lg border py-2 text-[12px] transition-colors ${
+                                            hidden
+                                              ? "border-cream/[0.12] text-cream/35 line-through"
+                                              : "seg-on border-transparent"
+                                          }`}
+                                        >
+                                          <Icon size={15} />
+                                          {label}
+                                        </button>
+                                      );
+                                    })}
+                                </div>
+                                {roadKinds.length > 0 && !cityCtl.hideRoads && (
+                                  <RoadTypesPanel
+                                    kinds={roadKinds}
+                                    hidden={cityCtl.hiddenRoadKinds}
+                                    optimize={cityCtl.optimizeRoads}
+                                    onToggle={(kind) =>
+                                      setCtl(
+                                        "hiddenRoadKinds",
+                                        cityCtl.hiddenRoadKinds.includes(kind)
+                                          ? cityCtl.hiddenRoadKinds.filter((k) => k !== kind)
+                                          : [...cityCtl.hiddenRoadKinds, kind]
+                                      )
+                                    }
+                                    onOptimize={(v) => setCtl("optimizeRoads", v)}
+                                  />
+                                )}
+                                <p className="m-0 text-[11px] leading-snug text-cream/45">
+                                  Hidden parts are left out of the download too. Nothing is deleted — tap again to bring them back.
+                                </p>
+                              </Step>
+                            )}
+                          </>
+                        );
+                      })()
+                    )}
                   </div>
                 )}
 

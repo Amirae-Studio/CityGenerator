@@ -297,6 +297,8 @@ function labelBand(o: FrameOptions): [number, number] {
   switch (o.profile) {
     case "stepped":
       return [0, B * 0.5]; // the raised outer step
+    case "cove":
+      return [0, B * 0.35]; // the flat outer band, before the sweep down
     case "chamfer": {
       const c = Math.min(B * 0.3, D * 0.3, 4);
       return [c, B - c];
@@ -647,7 +649,11 @@ export async function buildFrame(tile: { w: number; d: number }, o: FrameOptions
       return z;
     };
     let plateLo = Infinity, plateHi = -Infinity;
-    const u0 = hd - (plate.cy + plate.h / 2), u1 = hd - (plate.cy - plate.h / 2);
+    // The plate is on the bottom rail (y < 0), whose outer edge is y = -hd, so
+    // its inset from the outer edge is hd + y. (hd - y measured from the far
+    // side and always landed on the pocket rim — fine for profiles that are
+    // full height there, but it buried the letters on Stepped and Cove.)
+    const u0 = hd + (plate.cy - plate.h / 2), u1 = hd + (plate.cy + plate.h / 2);
     for (let k = 0; k <= 24; k++) {
       const z = faceZ(Math.max(0, Math.min(B, u0 + ((u1 - u0) * k) / 24)));
       plateLo = Math.min(plateLo, z);

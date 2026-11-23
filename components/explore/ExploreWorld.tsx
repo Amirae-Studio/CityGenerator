@@ -32,7 +32,7 @@ type Scan = {
 
 const DEFAULT_SHAPE: FrameShape = {
   kind: "square",
-  center: [2.2945, 48.8584], // Champ de Mars, Paris
+  center: [-0.1246, 51.5007], // Westminster, London (same spot as the map's "London" chip)
   size: 600,
   rotation: 0,
 };
