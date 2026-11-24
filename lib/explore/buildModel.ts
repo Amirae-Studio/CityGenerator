@@ -52,8 +52,9 @@ export const LAYER_LABELS: Record<ExploreLayer, string> = {
 
 export type LayerSummary = { key: ExploreLayer; label: string; count: number; detail: string };
 
-/** Target print width the min-feature sizes are tuned for. */
-export const PRINT_MM = 200;
+// Target print width the min-feature sizes are tuned for (see printSize.ts).
+export { PRINT_MM, TREE_PRINT_MM } from "./printSize";
+import { PRINT_MM, TREE_PRINT_MM } from "./printSize";
 
 const isMainBuilding = (b: OsmBuilding) => b.main ?? (b.height >= 30 || b.footprint >= 4000);
 
@@ -737,8 +738,7 @@ const isMainMesh = (b: MeshBuilding) => b.height >= 30 || b.footprint >= 4000;
 
 /* ── Trees ───────────────────────────────────────────────────────────── */
 
-/** Printed tree height. Smaller trees print as blobs or snap off the plate. */
-export const TREE_PRINT_MM = 6;
+// Printed tree height (TREE_PRINT_MM, printSize.ts): smaller trees print as blobs or snap off the plate.
 const MAX_TREES = 6000;
 /** Total triangles the tree layer may hold, so dense parks don't explode the file. */
 const TREE_TRI_BUDGET = 800_000;

@@ -2,7 +2,11 @@
   "appId": "city-generator",
   "name": "City Generator",
   "entryUrl": "http://localhost:5174/",
-  "capabilities": ["export", "toast", "requestAccess"],
+  "capabilities": [
+    "export",
+    "toast",
+    "requestAccess"
+  ],
   "membershipType": "partial_buyout",
   "membership": {
     "status": "unpurchased",
@@ -42,6 +46,32 @@
           "endTime": 0
         },
         "permissionScope": "<p>Permission to sell and otherwise use physical prints of models made with City Generator for commercial purposes during an active license.</p><p>Map data © OpenStreetMap contributors and the other sources credited in the app. <strong>Attribution required.</strong></p>"
+      },
+      {
+        "functionKey": "pro_pack",
+        "functionName": "City Generator Pro",
+        "originPrice": 6000,
+        "originPriceDisplay": {
+          "amount": 6000,
+          "currency": "USD",
+          "currencySign": "$",
+          "preferenceAmount": 6000,
+          "preferenceCurrency": "USD",
+          "preferenceCurrencySign": "$"
+        },
+        "discountConfig": {
+          "discountPrice": 6000,
+          "discountPriceDisplay": {
+            "amount": 6000,
+            "currency": "USD",
+            "currencySign": "$",
+            "preferenceAmount": 6000,
+            "preferenceCurrency": "USD",
+            "preferenceCurrencySign": "$"
+          },
+          "startTime": 0,
+          "endTime": 0
+        }
       }
     ]
   },

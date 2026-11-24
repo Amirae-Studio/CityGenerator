@@ -12,8 +12,17 @@
     "package": "vite build && rm -f dist.zip && cd dist && zip -qr -X ../dist.zip . -x \"*.DS_Store\""
   },
   "dependencies": {
+    "@fontsource/bebas-neue": "^5.3.0",
+    "@fontsource/cinzel": "^5.3.0",
     "@fontsource/cormorant-garamond": "^5.3.0",
+    "@fontsource/dancing-script": "^5.3.0",
     "@fontsource/instrument-sans": "^5.3.0",
+    "@fontsource/lobster": "^5.3.0",
+    "@fontsource/orbitron": "^5.3.0",
+    "@fontsource/oswald": "^5.3.0",
+    "@fontsource/pacifico": "^5.3.0",
+    "@fontsource/permanent-marker": "^5.3.0",
+    "@fontsource/playfair-display": "^5.3.0",
     "@fontsource/space-mono": "^5.3.0",
     "@mapbox/vector-tile": "^2.0.5",
     "@react-three/drei": "^10.7.8",

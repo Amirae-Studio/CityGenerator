@@ -5,20 +5,33 @@ import { DEFAULT_LAYER_COLORS, FILAMENT_LINES } from "@/lib/studio";
 import type { ModelFile } from "@/lib/types";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { CommercialLicenseButton } from "@/components/CommercialLicenseButton";
+import { BuyProButton } from "@/components/ProUpsell";
 import Scrubber from "@/components/ui/Scrubber";
 import { BackButton } from "@/components/ui/BackButton";
 import { StepPills } from "@/components/StepPills";
-import { StudioConfigurator } from "@/components/studio/StudioConfigurator";
 import { bounds, formatMeters, shapePolygon, type FrameShape } from "@/lib/explore/geo";
 import { fetchMapData, type OsmData } from "@/lib/explore/osm";
 import { loadHeights, shapeTerrain, type HeightSampler } from "@/lib/explore/elevation";
 import { TerrainModePicker, type TerrainChoice } from "./TerrainModePicker";
-import { TreePicker } from "./TreePicker";
-import { DEFAULT_TREE, loadTree, type TreeModelId, type TreeTemplate } from "@/lib/explore/trees";
-import { buildExploreModel, PRINT_MM, summarize, TREE_PRINT_MM, type ExploreLayer, type LayerSummary } from "@/lib/explore/buildModel";
+import type { TreeModelId, TreeTemplate } from "@/lib/explore/trees";
+import type { ExploreLayer, LayerSummary } from "@/lib/explore/buildModel";
+import { PRINT_MM, TREE_PRINT_MM } from "@/lib/explore/printSize";
 
-// The map (MapLibre) is a separate chunk so the first paint stays light.
+/*
+ * Code splitting: the first screen is only the map. three.js, the model
+ * builder, the tree models and the Studio load when they're first needed
+ * (scan, colours step, Generate), so the page — and MakerLab's handshake —
+ * come up fast.
+ */
 const MapPicker = lazy(() => import("./MapPicker").then((m) => ({ default: m.MapPicker })));
+const StudioConfigurator = lazy(() =>
+  import("@/components/studio/StudioConfigurator").then((m) => ({ default: m.StudioConfigurator }))
+);
+const TreePicker = lazy(() => import("./TreePicker").then((m) => ({ default: m.TreePicker })));
+type Builder = typeof import("@/lib/explore/buildModel");
+const loadBuilder = (): Promise<Builder> => import("@/lib/explore/buildModel");
+const loadTree = (id: TreeModelId) => import("@/lib/explore/trees").then((m) => m.loadTree(id));
+const DEFAULT_TREE: TreeModelId = "tree1";
 
 type Phase = "map" | "scanning" | "customize" | "building" | "studio";
 
@@ -66,13 +79,18 @@ export function ExploreWorld() {
   const [files, setFiles] = useState<ModelFile[] | null>(null);
   const [treeId, setTreeId] = useState<TreeModelId>(DEFAULT_TREE);
   const [tree, setTree] = useState<TreeTemplate | null>(null);
+  /** The model builder module, loaded with the first scan. */
+  const [builder, setBuilder] = useState<Builder | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const buildId = useRef(0);
   const rebuildTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // The tree model sets how big trees print and how many fit, so layer
   // counts follow the chosen model once it has loaded.
+  // Only once an area is scanned: the tree models need three.js.
+  const scanned = !!scan;
   useEffect(() => {
+    if (!scanned) return;
     let alive = true;
     loadTree(treeId)
       .then((t) => alive && setTree(t))
@@ -80,11 +98,14 @@ export function ExploreWorld() {
     return () => {
       alive = false;
     };
-  }, [treeId]);
+  }, [treeId, scanned]);
 
   const layers = useMemo(
-    () => (scan ? summarize(scan.data, scan.shape, scan.heights, tree?.id === treeId ? tree : undefined) : []),
-    [scan, tree, treeId]
+    () =>
+      scan && builder
+        ? builder.summarize(scan.data, scan.shape, scan.heights, tree?.id === treeId ? tree : undefined)
+        : [],
+    [scan, builder, tree, treeId]
   );
 
   const patchShape = useCallback((patch: Partial<FrameShape>) => setShape((s) => ({ ...s, ...patch })), []);
@@ -105,12 +126,14 @@ export function ExploreWorld() {
     try {
       const b = bounds(shapePolygon(snapshot));
       const half = Math.max(-b.minX, b.maxX, -b.minY, b.maxY) + 20;
-      const [data, heights, name] = await Promise.all([
+      const [data, heights, name, mod] = await Promise.all([
         fetchMapData(snapshot, ctrl.signal),
         loadHeights(snapshot.center, half, 256, ctrl.signal),
         placeName ? Promise.resolve(placeName) : reverseName(snapshot.center),
+        loadBuilder(), // fetched in parallel with the map data
       ]);
       if (ctrl.signal.aborted) return;
+      setBuilder(() => mod);
       if (name) setPlaceName(name);
       setScan({ shape: snapshot, data, heights, half });
       setPhase("customize");
@@ -125,8 +148,8 @@ export function ExploreWorld() {
   async function build(s: Scan, t: TerrainChoice, onProgress?: (label: string) => void) {
     const ground = shapeTerrain(s.heights, t.mode, s.half, s.shape.size / PRINT_MM);
     // A tree model that can't be fetched falls back to the built-in cone tree.
-    const model = await loadTree(treeId).catch(() => undefined);
-    return buildExploreModel(s.shape, s.data, ground, { relief: relief / 100, tree: model }, onProgress);
+    const [model, mod] = await Promise.all([loadTree(treeId).catch(() => undefined), builder ?? loadBuilder()]);
+    return mod.buildExploreModel(s.shape, s.data, ground, { relief: relief / 100, tree: model }, onProgress);
   }
 
   async function generate() {
@@ -174,6 +197,11 @@ export function ExploreWorld() {
     const name = placeName || "Custom place";
     const hasWater = layers.some((l) => l.key === "water");
     return (
+      <Suspense
+        fallback={
+          <div className="flex h-dvh items-center justify-center bg-base text-[12px] text-cream/50">Opening the Studio…</div>
+        }
+      >
       <StudioConfigurator
         type="explore"
         city={{ slug: "explore", name: "Explore" }}
@@ -195,6 +223,7 @@ export function ExploreWorld() {
           scan.heights.flat ? undefined : { ...terrain, busy: rebuilding, onChange: changeTerrainInStudio }
         }
       />
+      </Suspense>
     );
   }
 
@@ -216,6 +245,7 @@ export function ExploreWorld() {
         </div>
         <div className="flex shrink-0 items-center gap-3">
           <StepPills step={phase === "map" || phase === "scanning" ? 0 : 1} />
+          <BuyProButton />
           <CommercialLicenseButton compact />
           <ThemeToggle />
         </div>
@@ -425,7 +455,9 @@ function CustomizePanel({
             <p className="m-0 mb-2.5 text-[11.5px] leading-[1.5] text-cream/50">
               Placed on parks, woods and mapped trees · {TREE_PRINT_MM} mm tall
             </p>
-            <TreePicker value={treeId} onChange={onTree} color={colors.trees || "#3f7d3a"} />
+            <Suspense fallback={<div className="h-20 animate-pulse rounded-lg bg-cream/[0.05]" />}>
+              <TreePicker value={treeId} onChange={onTree} color={colors.trees || "#3f7d3a"} />
+            </Suspense>
           </div>
         )}
 

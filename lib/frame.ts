@@ -12,9 +12,50 @@
 
 import * as THREE from "three";
 
-export type FrameProfile = "flat" | "chamfer" | "rounded" | "stepped" | "cove";
-export type LabelFont = "sans" | "serif" | "mono";
-export type FrameTexture = "smooth" | "wood" | "reeded" | "crackle" | "hammered" | "knurl";
+export type FrameProfile =
+  | "flat"
+  | "chamfer"
+  | "rounded"
+  | "stepped"
+  | "cove"
+  // Pro
+  | "bevel"
+  | "scoop"
+  | "ogee"
+  | "bead"
+  | "tiered";
+export type LabelFont =
+  | "sans"
+  | "serif"
+  | "mono"
+  | "elegant"
+  | "roman"
+  | "tall"
+  | "condensed"
+  | "script"
+  | "brush"
+  | "retro"
+  | "marker"
+  | "tech";
+export type FrameTexture =
+  | "smooth"
+  | "wood"
+  | "reeded"
+  | "crackle"
+  | "hammered"
+  | "knurl"
+  // Pro
+  | "leaves"
+  | "waves"
+  | "honeycomb"
+  | "brick"
+  | "weave"
+  | "stars"
+  | "custom"; // the user's own SVG/PNG, in FrameOptions.pattern
+
+/** Edge shapes and textures that need City Generator Pro. */
+export const PRO_PROFILES = new Set<FrameProfile>(["bevel", "scoop", "ogee", "bead", "tiered"]);
+export const PRO_TEXTURES = new Set<FrameTexture>(["leaves", "waves", "honeycomb", "brick", "weave", "stars", "custom"]);
 
 export type FrameOptions = {
   border: number; // rail width, mm
@@ -34,6 +75,8 @@ export type FrameOptions = {
   labelColor: string; // letters print as their own part in this colour
   labelFont: LabelFont;
   color: string;
+  /** texture "custom": the user's pattern image as a data URL (SVG or PNG), "" for none. */
+  pattern: string;
 };
 
 export const FRAME_DEFAULTS: FrameOptions = {
@@ -54,6 +97,7 @@ export const FRAME_DEFAULTS: FrameOptions = {
   labelColor: "#FFFFFF",
   labelFont: "sans",
   color: "#000000",
+  pattern: "",
 };
 
 export const PROFILE_LABELS: Record<FrameProfile, string> = {
@@ -62,6 +106,11 @@ export const PROFILE_LABELS: Record<FrameProfile, string> = {
   rounded: "Rounded",
   stepped: "Stepped",
   cove: "Cove",
+  bevel: "Bevel",
+  scoop: "Scoop",
+  ogee: "Ogee",
+  bead: "Bead",
+  tiered: "Tiered",
 };
 
 export const TEXTURE_LABELS: Record<FrameTexture, string> = {
@@ -71,15 +120,61 @@ export const TEXTURE_LABELS: Record<FrameTexture, string> = {
   crackle: "Cracks",
   hammered: "Hammered",
   knurl: "Diamond",
+  leaves: "Leaves",
+  waves: "Waves",
+  honeycomb: "Honeycomb",
+  brick: "Brick",
+  weave: "Weave",
+  stars: "Stars",
+  custom: "Your pattern",
 };
 
-export const FONT_LABELS: Record<LabelFont, string> = { sans: "Sans", serif: "Serif", mono: "Mono" };
-
-const FONT_STACKS: Record<LabelFont, string> = {
-  sans: '700 {px}px "Inter", "Helvetica Neue", Arial, sans-serif',
-  serif: '700 {px}px Georgia, "Times New Roman", serif',
-  mono: '700 {px}px "SF Mono", Menlo, Consolas, monospace',
+export const FONT_LABELS: Record<LabelFont, string> = {
+  sans: "Sans",
+  serif: "Serif",
+  mono: "Mono",
+  elegant: "Elegant",
+  roman: "Roman",
+  tall: "Tall",
+  condensed: "Condensed",
+  script: "Script",
+  brush: "Brush",
+  retro: "Retro",
+  marker: "Marker",
+  tech: "Tech",
 };
+
+/**
+ * Font for each label style: [CSS weight, family list]. The web fonts are
+ * self-hosted (@fontsource, imported in src/main.tsx), so they work under
+ * MakerLab's CSP; system fonts back them up.
+ */
+export const LABEL_FONTS: Record<LabelFont, [number, string]> = {
+  sans: [700, '"Instrument Sans", "Helvetica Neue", Arial, sans-serif'],
+  serif: [700, 'Georgia, "Times New Roman", serif'],
+  mono: [700, '"Space Mono", Menlo, Consolas, monospace'],
+  elegant: [700, '"Playfair Display", Georgia, serif'],
+  roman: [700, '"Cinzel", Georgia, serif'],
+  tall: [400, '"Bebas Neue", Impact, sans-serif'],
+  condensed: [700, '"Oswald", "Arial Narrow", sans-serif'],
+  script: [700, '"Dancing Script", cursive'],
+  brush: [400, '"Pacifico", cursive'],
+  retro: [400, '"Lobster", cursive'],
+  marker: [400, '"Permanent Marker", cursive'],
+  tech: [700, '"Orbitron", sans-serif'],
+};
+
+const fontCss = (f: LabelFont, px: number) => `${LABEL_FONTS[f][0]} ${px.toFixed(1)}px ${LABEL_FONTS[f][1]}`;
+
+/** Web fonts load lazily: make sure the label's font is ready before drawing it on a canvas. */
+async function ensureFont(f: LabelFont) {
+  if (typeof document === "undefined" || !document.fonts) return;
+  try {
+    await document.fonts.load(fontCss(f, 48));
+  } catch {
+    /* falls back to the next family in the list */
+  }
+}
 
 /** Letters stand this far proud of the frame face, mm (four 0.2 mm layers). */
 const LABEL_RAISE = 0.8;
@@ -151,11 +246,91 @@ const smooth = (e0: number, e1: number, x: number) => {
  * `along` runs down the length of the rail the point is on and `across` over
  * its width, so grain and lines follow each rail and meet at mitred corners.
  */
-export function textureHeight(t: FrameTexture, x: number, y: number, along: number, across: number, scale: number) {
+export function textureHeight(
+  t: FrameTexture,
+  x: number,
+  y: number,
+  along: number,
+  across: number,
+  scale: number,
+  custom?: PatternSampler | null
+) {
   const s = Math.max(0.25, scale);
+  const fract = (v: number) => v - Math.floor(v);
   switch (t) {
     case "smooth":
       return 1;
+    case "custom": {
+      // The user's image, tiled along each rail like the other patterns.
+      if (!custom) return 1;
+      const tile = 12 * s;
+      return custom(fract(along / tile), fract(across / tile));
+    }
+    case "leaves": {
+      // A garland of raised leaves, tilted alternately, each with a carved midrib.
+      const p = 6 * s;
+      const row = Math.floor(across / p);
+      const u = along / p + (row % 2 ? 0.5 : 0);
+      const cx = fract(u) - 0.5, cy = fract(across / p) - 0.5;
+      const tilt = (Math.floor(u) % 2 ? 1 : -1) * 0.6;
+      const lx = cx * Math.cos(tilt) - cy * Math.sin(tilt);
+      const ly = cx * Math.sin(tilt) + cy * Math.cos(tilt);
+      // Leaf = lens where two circles overlap: 0.84 long, 0.32 wide.
+      const R = 0.631, d = 0.471;
+      const inside = Math.min(R - Math.hypot(lx, ly - d), R - Math.hypot(lx, ly + d));
+      const leaf = smooth(-0.015, 0.03, inside);
+      const vein = (1 - smooth(0.0, 0.025, Math.abs(ly))) * (1 - smooth(0.3, 0.36, Math.abs(lx)));
+      return 0.15 + 0.85 * leaf * (1 - 0.45 * vein);
+    }
+    case "waves": {
+      // Rolling ridges along the rail.
+      const p = 3.2 * s;
+      const v = across / p + 0.3 * Math.sin((along / (2.6 * p)) * Math.PI * 2);
+      return 0.5 + 0.5 * Math.sin(v * Math.PI * 2);
+    }
+    case "honeycomb": {
+      // Raised hexagonal cells with carved walls.
+      const size = 4 * s;
+      const px = along / size, py = across / size;
+      const rx = 1, ry = Math.sqrt(3);
+      const ax = ((px % rx) + rx) % rx - rx / 2, ay = ((py % ry) + ry) % ry - ry / 2;
+      const bx = (((px - rx / 2) % rx) + rx) % rx - rx / 2, by = (((py - ry / 2) % ry) + ry) % ry - ry / 2;
+      const [gx, gy] = ax * ax + ay * ay < bx * bx + by * by ? [ax, ay] : [bx, by];
+      const dh = Math.max(Math.abs(gx), Math.abs(gx) * 0.5 + Math.abs(gy) * 0.866);
+      return 1 - smooth(0.4, 0.48, dh);
+    }
+    case "brick": {
+      // Running-bond bricks with carved mortar joints.
+      const h = 3 * s, w = 6.5 * s;
+      const row = Math.floor(across / h);
+      const bx = fract(along / w + (row % 2 ? 0.5 : 0)), by = fract(across / h);
+      const joint = Math.min(Math.min(bx, 1 - bx) * w, Math.min(by, 1 - by) * h);
+      return smooth(0.2, 0.45, joint);
+    }
+    case "weave": {
+      // Basket weave: blocks of strands alternating direction.
+      const c = 3.5 * s;
+      const i = Math.floor(along / c), j = Math.floor(across / c);
+      const lx = fract(along / c), ly = fract(across / c);
+      const strands = 3;
+      const v = (i + j) % 2 ? ly : lx;
+      const strand = Math.sin(fract(v * strands) * Math.PI);
+      const edge = Math.min(lx, 1 - lx, ly, 1 - ly);
+      return 0.25 + 0.75 * Math.pow(strand, 0.6) * smooth(0, 0.06, edge);
+    }
+    case "stars": {
+      // Five-pointed stars on a staggered grid.
+      const p = 6 * s;
+      const row = Math.floor(across / p);
+      const cx = fract(along / p + (row % 2 ? 0.5 : 0)) - 0.5, cy = fract(across / p) - 0.5;
+      const r = Math.hypot(cx, cy);
+      const a = Math.atan2(cy, cx) + Math.PI / 2;
+      const k = Math.cos(((((a / (Math.PI * 2 / 5)) % 1) + 1) % 1 - 0.5) * (Math.PI * 2 / 5));
+      // Radius of the star outline at this angle, between the inner and outer points.
+      const outer = 0.34, inner = 0.14;
+      const edgeR = inner + (outer - inner) * Math.pow(Math.max(0, (k - Math.cos(Math.PI / 5)) / (1 - Math.cos(Math.PI / 5))), 1.6);
+      return 0.25 + 0.75 * (1 - smooth(edgeR - 0.02, edgeR + 0.02, r));
+    }
     case "wood": {
       // Growth rings: stripes along the rail, bent by low-frequency noise,
       // with fine fibre streaks running the same way.
@@ -190,6 +365,56 @@ export function textureHeight(t: FrameTexture, x: number, y: number, along: numb
       return 1 - Math.min(tri(x + y), tri(x - y));
     }
   }
+}
+
+/** A tiled pattern: (u, v) in [0, 1) → surface height in [0, 1]. */
+export type PatternSampler = (u: number, v: number) => number;
+
+const patternCache = new Map<string, Promise<PatternSampler>>();
+
+/**
+ * The user's pattern image as a height map. Dark (inked) areas are carved
+ * into the face, light or transparent areas stay at the surface — so a logo
+ * or motif drawn in black is engraved into the frame. SVGs are drawn as
+ * images (no scripts run), then sampled at 256×256 with bilinear filtering.
+ */
+export function loadPattern(dataUrl: string): Promise<PatternSampler> {
+  let p = patternCache.get(dataUrl);
+  if (!p) {
+    p = (async () => {
+      const img = new Image();
+      img.decoding = "async";
+      img.src = dataUrl;
+      await img.decode();
+      const N = 256;
+      const c = document.createElement("canvas");
+      c.width = c.height = N;
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      if (!ctx) throw new Error("No 2D canvas");
+      // Fit the whole image in the tile, keeping its proportions.
+      const k = Math.min(N / (img.naturalWidth || N), N / (img.naturalHeight || N));
+      const w = (img.naturalWidth || N) * k, h = (img.naturalHeight || N) * k;
+      ctx.drawImage(img, (N - w) / 2, (N - h) / 2, w, h);
+      const data = ctx.getImageData(0, 0, N, N).data;
+      const H = new Float32Array(N * N);
+      for (let i = 0; i < N * N; i++) {
+        const a = data[i * 4 + 3] / 255;
+        const lum = (0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2]) / 255;
+        H[i] = 1 - a * (1 - lum); // inked → carved (0), paper/transparent → face (1)
+      }
+      return (u: number, v: number) => {
+        const x = u * N - 0.5, y = (1 - v) * N - 0.5;
+        const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
+        const at = (i: number, j: number) => H[(((j % N) + N) % N) * N + (((i % N) + N) % N)];
+        const top = at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx;
+        const bot = at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx;
+        return top * (1 - fy) + bot * fy;
+      };
+    })();
+    patternCache.set(dataUrl, p);
+    p.catch(() => patternCache.delete(dataUrl));
+  }
+  return p;
 }
 
 /* ── Profile ──────────────────────────────────────────────────────────── */
@@ -238,6 +463,62 @@ function frontProfile(o: FrameOptions): PP[] {
         pts.push({ u: m + t * (B - m), z: D - h * Math.sqrt(1 - (1 - t) ** 2), face: true });
       }
       return pts;
+    }
+    case "bevel": {
+      // Face slopes down from a flat outer band toward the picture.
+      const h = Math.min(5, D * 0.35);
+      const m = B * 0.3;
+      return [{ u: 0, z: 0 }, { u: 0, z: D, face: true }, { u: m, z: D, face: true }, { u: B, z: D - h, face: true }];
+    }
+    case "scoop": {
+      // A shallow channel across the middle of the rail, flat bands either side.
+      const h = Math.min(3, D * 0.25);
+      const a = B * 0.3, b = B * 0.85;
+      const pts: PP[] = [{ u: 0, z: 0 }, { u: 0, z: D, face: true }, { u: a, z: D, face: true }];
+      for (let k = 1; k < 12; k++) {
+        const t = k / 12;
+        pts.push({ u: a + t * (b - a), z: D - h * Math.sin(t * Math.PI), face: true });
+      }
+      pts.push({ u: b, z: D, face: true }, { u: B, z: D, face: true });
+      return pts;
+    }
+    case "ogee": {
+      // Classic S-curve moulding: flat outer band, then convex into concave.
+      const h = Math.min(4.5, D * 0.3);
+      const m = B * 0.3;
+      const pts: PP[] = [{ u: 0, z: 0 }, { u: 0, z: D, face: true }, { u: m, z: D, face: true }];
+      for (let k = 1; k <= 16; k++) {
+        const t = k / 16;
+        pts.push({ u: m + t * (B - m), z: D - h * (0.5 - 0.5 * Math.cos(t * Math.PI)), face: true });
+      }
+      return pts;
+    }
+    case "bead": {
+      // Flat face with a half-round bead along the inner edge.
+      const r = Math.min(B * 0.16, D * 0.2, 2.5);
+      const top = D - r;
+      const pts: PP[] = [{ u: 0, z: 0 }, { u: 0, z: top, face: true }, { u: B - 2 * r, z: top, face: true }];
+      for (let k = 1; k <= 12; k++) {
+        const a = Math.PI - (k / 12) * Math.PI;
+        pts.push({ u: B - r + r * Math.cos(a), z: top + r * Math.sin(a), face: true });
+      }
+      return pts;
+    }
+    case "tiered": {
+      // Three steps down toward the picture, like an Art Deco frame.
+      const step = Math.min(2, D * 0.15);
+      const t1 = B / 3, t2 = (2 * B) / 3;
+      return [
+        { u: 0, z: 0 },
+        { u: 0, z: D, face: true },
+        { u: t1, z: D, face: true },
+        { u: t1, z: D - step },
+        { u: t1 + 0.01, z: D - step, face: true },
+        { u: t2, z: D - step, face: true },
+        { u: t2, z: D - 2 * step },
+        { u: t2 + 0.01, z: D - 2 * step, face: true },
+        { u: B, z: D - 2 * step, face: true },
+      ];
     }
   }
 }
@@ -299,6 +580,16 @@ function labelBand(o: FrameOptions): [number, number] {
       return [0, B * 0.5]; // the raised outer step
     case "cove":
       return [0, B * 0.35]; // the flat outer band, before the sweep down
+    case "bevel":
+    case "scoop":
+    case "ogee":
+      return [0, B * 0.3]; // the flat outer band
+    case "bead": {
+      const r = Math.min(B * 0.16, D * 0.2, 2.5);
+      return [0, B - 2 * r]; // the flat face, short of the bead
+    }
+    case "tiered":
+      return [0, B / 3]; // the top step
     case "chamfer": {
       const c = Math.min(B * 0.3, D * 0.3, 4);
       return [c, B - c];
@@ -330,7 +621,7 @@ function nameplate(o: FrameOptions, railY: number, maxW: number): Plate | null {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) return null;
-  const font = (px: number) => FONT_STACKS[o.labelFont].replace("{px}", px.toFixed(1));
+  const font = (px: number) => fontCss(o.labelFont, px);
   // Cap height is roughly 0.72 of the font size for these faces.
   let fontPx = (cap / 0.72) * PX;
   ctx.font = font(fontPx);
@@ -535,8 +826,11 @@ export async function buildFrame(tile: { w: number; d: number }, o: FrameOptions
 
   // Letters sit centred on the flat band of the bottom rail.
   const [bandU, bandW] = labelBand(o);
+  if (o.label.trim()) await ensureFont(o.labelFont);
   const plate = nameplate(o, -(hd - bandU - bandW / 2), Math.min(size.opening.w * 0.75, 2 * hw - 2 * B));
-  const amp = o.texture === "smooth" ? 0 : Math.max(0, o.textureDepth);
+  // The user's own pattern; a missing or unreadable one leaves the face smooth.
+  const custom = o.texture === "custom" && o.pattern ? await loadPattern(o.pattern).catch(() => null) : null;
+  const amp = o.texture === "smooth" || (o.texture === "custom" && !custom) ? 0 : Math.max(0, o.textureDepth);
 
   const pos: number[] = [];
   const rings: number[][] = [];
@@ -571,7 +865,7 @@ export async function buildFrame(tile: { w: number; d: number }, o: FrameOptions
           // A smooth band under the letters keeps them readable on any texture.
           a *= smooth(0, 1.5, Math.max(inX, inY));
         }
-        if (a > 0) z -= a * (1 - textureHeight(o.texture, q.x, q.y, along, across, o.textureScale)) * fade;
+        if (a > 0) z -= a * (1 - textureHeight(o.texture, q.x, q.y, along, across, o.textureScale, custom)) * fade;
 
       }
       idx.push(vert(q.x, q.y, z));

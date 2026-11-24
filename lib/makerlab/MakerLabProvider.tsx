@@ -40,14 +40,28 @@ type MakerLabValue = {
   commercial: CommercialLicense | null;
   buyCommercial: () => Promise<void>;
   buying: boolean;
+  /** A paid feature from the host's price catalog, or null when it isn't offered (or not in MakerLab). */
+  paidFeature: (functionKey: string) => PaidFeature | null;
+  /**
+   * Authorises a paid feature before it runs (Paid Features › Step 4): the
+   * host checks ownership, takes payment if needed and verifies again.
+   * Resolves true only when the feature may run. Cancelled payment is silent;
+   * other failures show the documented message. Never unlocks on an error.
+   */
+  ensureAccess: (functionKey: string) => Promise<boolean>;
+  /** The functionKey whose requestAccess is in flight, if any. */
+  busyKey: string | null;
 };
 
-export type CommercialLicense = {
+export type PaidFeature = {
   feature: GeneratorFunctionPayment;
+  /** Display only (isUnlocked) — run the feature only after ensureAccess. */
   owned: boolean;
   price: string;
   originalPrice?: string;
 };
+
+export type CommercialLicense = PaidFeature;
 
 const MakerLabCtx = createContext<MakerLabValue | null>(null);
 
@@ -114,7 +128,6 @@ export function MakerLabProvider({ children }: { children: ReactNode }) {
   const [conn, setConn] = useState<Connection | null>(null);
   const [context, setContext] = useState<Readonly<AppContext> | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [buying, setBuying] = useState(false);
 
   useEffect(() => {
     if (!HOSTED) return;
@@ -177,34 +190,49 @@ export function MakerLabProvider({ children }: { children: ReactNode }) {
     [sdk, can]
   );
 
-  const commercial = useMemo<CommercialLicense | null>(() => {
-    const feature = context?.payment.functions.find((f) => f.functionKey === COMMERCIAL_KEY);
-    if (!feature || !sdk) return null;
-    return {
-      feature,
-      owned: isUnlocked(COMMERCIAL_KEY),
-      price: formatPrice(feature.useDiscount ? feature.discountPriceDisplay : feature.originPriceDisplay),
-      originalPrice: feature.useDiscount ? formatPrice(feature.originPriceDisplay) : undefined,
-    };
-  }, [context, sdk, isUnlocked]);
+  const paidFeature = useCallback(
+    (key: string): PaidFeature | null => {
+      // Prices and ownership come from the platform (context.payment) — never hard-coded.
+      const feature = context?.payment.functions.find((f) => f.functionKey === key);
+      if (!feature || !sdk) return null;
+      return {
+        feature,
+        owned: isUnlocked(key),
+        price: formatPrice(feature.useDiscount ? feature.discountPriceDisplay : feature.originPriceDisplay),
+        originalPrice: feature.useDiscount ? formatPrice(feature.originPriceDisplay) : undefined,
+      };
+    },
+    [context, sdk, isUnlocked]
+  );
 
-  /**
-   * Opens the host's purchase flow for the commercial license. Ownership in
-   * the UI updates from onPaymentChange — never from this promise.
-   */
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+
+  const ensureAccess = useCallback(
+    async (key: string) => {
+      if (!sdk || !can("requestAccess") || busyKey) return false;
+      setBusyKey(key);
+      try {
+        await sdk.requestAccess(key);
+        return true; // the feature may run; the UI updates from onPaymentChange
+      } catch (err) {
+        if (isError(err, "PAYMENT_CANCELLED")) return false; // user closed payment: stay silent
+        const code = (err as { code?: string })?.code ?? "";
+        await toast({ message: ACCESS_MESSAGES[code] ?? "Something went wrong. Please try again.", type: "info" });
+        return false; // keep it locked on every failure
+      } finally {
+        setBusyKey(null);
+      }
+    },
+    [sdk, can, busyKey, isError, toast]
+  );
+
+  const commercial = useMemo(() => paidFeature(COMMERCIAL_KEY), [paidFeature]);
+
+  /** Opens the host's purchase flow for the commercial license. */
   const buyCommercial = useCallback(async () => {
-    if (!sdk || !can("requestAccess") || buying) return;
-    setBuying(true);
-    try {
-      await sdk.requestAccess(COMMERCIAL_KEY);
-    } catch (err) {
-      if (isError(err, "PAYMENT_CANCELLED")) return; // user closed payment: stay silent
-      const code = (err as { code?: string })?.code ?? "";
-      await toast({ message: ACCESS_MESSAGES[code] ?? "Something went wrong. Please try again.", type: "info" });
-    } finally {
-      setBuying(false);
-    }
-  }, [sdk, can, buying, isError, toast]);
+    await ensureAccess(COMMERCIAL_KEY);
+  }, [ensureAccess]);
+  const buying = busyKey === COMMERCIAL_KEY;
 
   const value = useMemo<MakerLabValue>(
     () => ({
@@ -221,8 +249,11 @@ export function MakerLabProvider({ children }: { children: ReactNode }) {
       commercial,
       buyCommercial,
       buying,
+      paidFeature,
+      ensureAccess,
+      busyKey,
     }),
-    [status, sdk, context, error, can, isUnlocked, isError, toast, commercial, buyCommercial, buying]
+    [status, sdk, context, error, can, isUnlocked, isError, toast, commercial, buyCommercial, buying, paidFeature, ensureAccess, busyKey]
   );
 
   return <MakerLabCtx.Provider value={value}>{children}</MakerLabCtx.Provider>;

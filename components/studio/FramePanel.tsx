@@ -1,15 +1,18 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Check,
   ChevronDown,
   Download,
   Frame as FrameIcon,
+  ImagePlus,
   Loader2,
   SlidersHorizontal,
   Trash2,
   TriangleAlert,
   Type,
 } from "lucide-react";
+import { usePro } from "@/lib/makerlab/usePro";
+import { PRO_ELSEWHERE, ProBadge, ProBanner, ProModal } from "../ProUpsell";
 import Scrubber from "../ui/Scrubber";
 import SegmentedToggle from "../ui/Switch";
 import { Step, SubSection } from "../ui/Step";
@@ -17,7 +20,10 @@ import { fitScale, type Printer } from "@/lib/studio";
 import {
   FONT_LABELS,
   FRAME_DEFAULTS,
+  LABEL_FONTS,
   MIN_HANGER_BORDER,
+  PRO_PROFILES,
+  PRO_TEXTURES,
   autoLabelSize,
   maxLabelSize,
   PROFILE_LABELS,
@@ -46,16 +52,30 @@ const FRAME_COLORS: [string, string][] = [
   ["Mistletoe Green", "#3F8E43"],
 ];
 
-const STYLES: { name: string; note: string; opts: Partial<FrameOptions> }[] = [
+type Look = { name: string; note: string; pro?: boolean; opts: Partial<FrameOptions> };
+
+/** Ready-made looks. The first four are free; the rest need City Generator Pro. */
+const STYLES: Look[] = [
   { name: "Gallery", note: "Clean & flat", opts: { profile: "flat", texture: "smooth", radius: 0, border: 15, color: "#000000", labelColor: "#FFFFFF", labelFont: "sans" } },
   { name: "Oak", note: "Wood look", opts: { profile: "rounded", texture: "wood", radius: 2, border: 20, textureDepth: 0.6, textureScale: 1, color: "#6F5034", labelColor: "#E4BD68", labelFont: "serif" } },
   { name: "Modern", note: "Soft corners", opts: { profile: "chamfer", texture: "smooth", radius: 8, border: 15, color: "#FFFFFF", labelColor: "#000000", labelFont: "sans" } },
   { name: "Antique", note: "Classic, aged", opts: { profile: "stepped", texture: "crackle", radius: 0, border: 22, textureDepth: 0.5, textureScale: 1, color: "#E4BD68", labelColor: "#000000", labelFont: "serif" } },
+  { name: "Botanical", note: "Leaf garland", pro: true, opts: { profile: "rounded", texture: "leaves", radius: 3, border: 22, textureDepth: 0.7, textureScale: 1, color: "#3F8E43", labelColor: "#FFFFFF", labelFont: "elegant" } },
+  { name: "Ocean", note: "Rolling waves", pro: true, opts: { profile: "cove", texture: "waves", radius: 4, border: 20, textureDepth: 0.6, textureScale: 1, color: "#5B6579", labelColor: "#FFFFFF", labelFont: "condensed" } },
+  { name: "Hive", note: "Honeycomb", pro: true, opts: { profile: "chamfer", texture: "honeycomb", radius: 0, border: 20, textureDepth: 0.6, textureScale: 1, color: "#E4BD68", labelColor: "#000000", labelFont: "tall" } },
+  { name: "Loft", note: "Brick wall", pro: true, opts: { profile: "flat", texture: "brick", radius: 0, border: 22, textureDepth: 0.6, textureScale: 1, color: "#9D2235", labelColor: "#F7E6DE", labelFont: "marker" } },
+  { name: "Baroque", note: "Ogee & hammered", pro: true, opts: { profile: "ogee", texture: "hammered", radius: 0, border: 25, textureDepth: 0.5, textureScale: 1, color: "#E4BD68", labelColor: "#6F5034", labelFont: "roman" } },
+  { name: "Art Deco", note: "Tiered lines", pro: true, opts: { profile: "tiered", texture: "reeded", radius: 0, border: 24, textureDepth: 0.4, textureScale: 1, color: "#000000", labelColor: "#E4BD68", labelFont: "condensed" } },
+  { name: "Linen", note: "Woven, beaded", pro: true, opts: { profile: "bead", texture: "weave", radius: 2, border: 20, textureDepth: 0.5, textureScale: 1, color: "#F7E6DE", labelColor: "#6F5034", labelFont: "script" } },
+  { name: "Starry", note: "Stars, bevelled", pro: true, opts: { profile: "bevel", texture: "stars", radius: 0, border: 22, textureDepth: 0.6, textureScale: 1, color: "#5B6579", labelColor: "#E4BD68", labelFont: "retro" } },
 ];
+
+const MAX_PATTERN_BYTES = 1_000_000;
 
 const colorName = (hex: string) => FRAME_COLORS.find(([, h]) => h.toLowerCase() === hex.toLowerCase())?.[0] ?? hex.toUpperCase();
 
-const fontStack = (f: LabelFont) => (f === "serif" ? "Georgia, serif" : f === "mono" ? "Menlo, monospace" : undefined);
+const fontStack = (f: LabelFont) => LABEL_FONTS[f][1];
+const fontWeight = (f: LabelFont) => LABEL_FONTS[f][0];
 
 /** Plain-language names for the shape presets of each slider. */
 const BORDER_PRESETS: [string, number][] = [
@@ -90,6 +110,36 @@ export function FramePanel({
   downloading: "stl" | "3mf" | null;
 }) {
   const [more, setMore] = useState(false);
+  const pro = usePro();
+  /** Shown when a Pro option is tapped but Pro can't be bought here (standalone). */
+  const [proNote, setProNote] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [proModal, setProModal] = useState(false);
+
+  /**
+   * Applies an option. Pro options go through requestAccess first, every time
+   * (Paid Features › Step 4), and are applied only if it resolves.
+   */
+  const choose = async (isPro: boolean | undefined, apply: () => void) => {
+    setProNote(null);
+    if (!isPro) return apply();
+    if (!pro.owned && !pro.available) return setProNote(PRO_ELSEWHERE);
+    if (await pro.unlock()) apply();
+  };
+
+  /** The user's pattern: read the file, then (Pro) use it as the texture. */
+  const onPatternFile = (file: File | undefined) => {
+    if (fileRef.current) fileRef.current.value = "";
+    if (!file) return;
+    if (!/^image\/(svg\+xml|png|jpeg|webp)$/.test(file.type)) return setProNote("Pick an SVG, PNG, JPG or WebP image.");
+    if (file.size > MAX_PATTERN_BYTES) return setProNote("That image is over 1 MB — try a simpler SVG.");
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = String(reader.result);
+      void choose(true, () => onOpts({ texture: "custom", pattern: url }));
+    };
+    reader.readAsDataURL(file);
+  };
 
   if (!enabled) {
     return (
@@ -174,26 +224,38 @@ export function FramePanel({
         </div>
       </div>
 
+      <ProBanner pro={pro} onMore={() => setProModal(true)} />
+      <ProModal open={proModal} onClose={() => setProModal(false)} />
+      {proNote && (
+        <p role="status" className="-mt-3 m-0 rounded-lg bg-cream/[0.05] px-3 py-2 text-[11.5px] leading-snug text-cream/70">
+          {proNote}
+        </p>
+      )}
+
       {/* 1 · Look */}
-      <Step n={1} title="Choose a look">
+      <Step n={1} title="Choose a look" hint={`${STYLES.length} looks`}>
         <div className="grid grid-cols-2 gap-2">
           {STYLES.map((s) => {
             const on = activeStyle === s;
+            const locked = s.pro && !pro.owned;
             return (
               <button
                 key={s.name}
                 type="button"
                 aria-pressed={on}
-                onClick={() => onOpts(s.opts)}
-                className={`flex items-center gap-2.5 rounded-xl border p-2 text-left transition-colors ${
+                disabled={pro.busy}
+                onClick={() => void choose(s.pro, () => onOpts(s.opts))}
+                title={locked ? `${s.name} — part of City Generator Pro` : s.name}
+                className={`relative flex items-center gap-2.5 rounded-xl border p-2 text-left transition-colors ${
                   on ? "seg-on border-transparent" : "border-cream/[0.12] hover:border-cream/35 hover:bg-cream/[0.04]"
                 }`}
               >
-                <StyleThumb color={s.opts.color!} radius={s.opts.radius ?? 0} />
-                <span className="min-w-0">
-                  <span className="block text-[12.5px] font-medium">{s.name}</span>
+                <StyleThumb color={s.opts.color!} radius={s.opts.radius ?? 0} texture={s.opts.texture ?? "smooth"} />
+                <span className={`min-w-0 ${locked ? "pr-7" : ""}`}>
+                  <span className="block truncate text-[12.5px] font-medium">{s.name}</span>
                   <span className="block text-[10.5px] opacity-60">{s.note}</span>
                 </span>
+                {s.pro && <ProBadge owned={pro.owned} className="absolute right-1.5 top-1.5" />}
               </button>
             );
           })}
@@ -202,49 +264,97 @@ export function FramePanel({
 
       {/* 2 · Edge & texture */}
       <Step n={2} title="Edge & texture">
-            <SubSection label="Edge shape">
-              <div className="grid grid-cols-5 gap-1">
-                {(Object.keys(PROFILE_LABELS) as FrameProfile[]).map((p) => (
-                  <Chip key={p} on={opts.profile === p} onClick={() => onOpts({ profile: p })} title={PROFILE_LABELS[p]}>
-                    <ProfileIcon p={p} />
-                    <span className="text-[10px]">{PROFILE_LABELS[p]}</span>
-                  </Chip>
-                ))}
-              </div>
-            </SubSection>
+        <SubSection label="Edge shape">
+          <div className="grid grid-cols-5 gap-1">
+            {(Object.keys(PROFILE_LABELS) as FrameProfile[]).map((p) => (
+              <Chip
+                key={p}
+                on={opts.profile === p}
+                onClick={() => void choose(PRO_PROFILES.has(p), () => onOpts({ profile: p }))}
+                title={PRO_PROFILES.has(p) && !pro.owned ? `${PROFILE_LABELS[p]} — Pro` : PROFILE_LABELS[p]}
+              >
+                <ProfileIcon p={p} />
+                <span className="text-[10px]">{PROFILE_LABELS[p]}</span>
+                {PRO_PROFILES.has(p) && <ProBadge owned={pro.owned} className="absolute -right-1 -top-1.5 scale-90" />}
+              </Chip>
+            ))}
+          </div>
+        </SubSection>
 
-            <SubSection label="Surface texture">
-              <div className="grid grid-cols-3 gap-1.5">
-                {(Object.keys(TEXTURE_LABELS) as FrameTexture[]).map((t) => (
-                  <Chip key={t} on={opts.texture === t} onClick={() => onOpts({ texture: t })} title={TEXTURE_LABELS[t]}>
-                    <TextureSwatch t={t} />
-                    <span className="text-[10.5px]">{TEXTURE_LABELS[t]}</span>
-                  </Chip>
-                ))}
-              </div>
-              {opts.texture !== "smooth" && (
-                <div className="mt-1 flex flex-col gap-2">
-                  <Scrubber
-                    label="Texture depth (mm)"
-                    value={opts.textureDepth}
-                    min={0.2}
-                    max={1.2}
-                    step={0.1}
-                    decimals={1}
-                    onValueChange={(v) => onOpts({ textureDepth: v })}
-                  />
-                  <Scrubber
-                    label="Pattern size (%)"
-                    value={Math.round(opts.textureScale * 100)}
-                    min={50}
-                    max={250}
-                    step={10}
-                    decimals={0}
-                    onValueChange={(v) => onOpts({ textureScale: v / 100 })}
-                  />
-                </div>
-              )}
-            </SubSection>
+        <SubSection label="Surface texture">
+          <div className="grid grid-cols-3 gap-1.5">
+            {(Object.keys(TEXTURE_LABELS) as FrameTexture[]).map((t) =>
+              t === "custom" ? (
+                <Chip
+                  key={t}
+                  on={opts.texture === "custom"}
+                  onClick={() => {
+                    setProNote(null);
+                    if (!pro.owned && !pro.available) return setProNote(PRO_ELSEWHERE);
+                    fileRef.current?.click();
+                  }}
+                  title="Upload your own SVG pattern (Pro)"
+                >
+                  {opts.pattern ? (
+                    <img src={opts.pattern} alt="" className="h-9 w-full rounded-md bg-white object-contain" />
+                  ) : (
+                    <span className="flex h-9 w-full items-center justify-center rounded-md border border-dashed border-cream/30">
+                      <ImagePlus size={16} />
+                    </span>
+                  )}
+                  <span className="text-[10.5px]">{opts.pattern ? "Change SVG" : "Your SVG"}</span>
+                  <ProBadge owned={pro.owned} className="absolute -right-1 -top-1.5 scale-90" />
+                </Chip>
+              ) : (
+                <Chip
+                  key={t}
+                  on={opts.texture === t}
+                  onClick={() => void choose(PRO_TEXTURES.has(t), () => onOpts({ texture: t }))}
+                  title={PRO_TEXTURES.has(t) && !pro.owned ? `${TEXTURE_LABELS[t]} — Pro` : TEXTURE_LABELS[t]}
+                >
+                  <TextureSwatch t={t} />
+                  <span className="text-[10.5px]">{TEXTURE_LABELS[t]}</span>
+                  {PRO_TEXTURES.has(t) && <ProBadge owned={pro.owned} className="absolute -right-1 -top-1.5 scale-90" />}
+                </Chip>
+              )
+            )}
+          </div>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".svg,image/svg+xml,image/png,image/jpeg,image/webp"
+            className="hidden"
+            onChange={(e) => onPatternFile(e.target.files?.[0])}
+          />
+          {opts.texture === "custom" && (
+            <p className="m-0 text-[11px] leading-snug text-cream/45">
+              Your image repeats along the frame. Dark parts are carved in, light or transparent parts stay smooth —
+              simple black-on-white shapes work best.
+            </p>
+          )}
+          {opts.texture !== "smooth" && (
+            <div className="mt-1 flex flex-col gap-2">
+              <Scrubber
+                label="Texture depth (mm)"
+                value={opts.textureDepth}
+                min={0.2}
+                max={1.2}
+                step={0.1}
+                decimals={1}
+                onValueChange={(v) => onOpts({ textureDepth: v })}
+              />
+              <Scrubber
+                label="Pattern size (%)"
+                value={Math.round(opts.textureScale * 100)}
+                min={50}
+                max={250}
+                step={10}
+                decimals={0}
+                onValueChange={(v) => onOpts({ textureScale: v / 100 })}
+              />
+            </div>
+          )}
+        </SubSection>
       </Step>
 
       {/* 3 · Colour */}
@@ -272,8 +382,8 @@ export function FramePanel({
               aria-label="Text preview"
             >
               <span
-                className="truncate text-[16px] font-bold"
-                style={{ color: opts.labelColor, fontFamily: fontStack(opts.labelFont) }}
+                className="truncate text-[17px]"
+                style={{ color: opts.labelColor, fontFamily: fontStack(opts.labelFont), fontWeight: fontWeight(opts.labelFont) }}
               >
                 {opts.label}
               </span>
@@ -295,8 +405,11 @@ export function FramePanel({
             </label>
 
             <div className="flex flex-col gap-1.5">
-              <span className="text-[11.5px] text-cream/60">Font</span>
-              <div className="grid grid-cols-3 gap-1.5">
+              <span className="flex items-center justify-between text-[11.5px] text-cream/60">
+                Font
+                <span className="text-[10.5px] text-cream/40">{FONT_LABELS[opts.labelFont]}</span>
+              </span>
+              <div className="grid grid-cols-4 gap-1.5">
                 {(Object.keys(FONT_LABELS) as LabelFont[]).map((f) => (
                   <button
                     key={f}
@@ -307,7 +420,10 @@ export function FramePanel({
                       opts.labelFont === f ? "seg-on border-transparent" : "border-cream/[0.12] text-cream/65 hover:text-cream"
                     }`}
                   >
-                    <span className="text-[16px] font-bold leading-tight" style={{ fontFamily: fontStack(f) }}>
+                    <span
+                      className="text-[17px] leading-tight"
+                      style={{ fontFamily: fontStack(f), fontWeight: fontWeight(f) }}
+                    >
                       Aa
                     </span>
                     <span className="text-[10px]">{FONT_LABELS[f]}</span>
@@ -521,15 +637,19 @@ export function FramePanel({
   );
 }
 
-/** Tiny frame thumbnail for a style card. */
-function StyleThumb({ color, radius }: { color: string; radius: number }) {
+/** Tiny frame thumbnail for a style card: the frame colour with its texture shaded in. */
+function StyleThumb({ color, radius, texture }: { color: string; radius: number; texture: FrameTexture }) {
+  const shade = useTextureUrl(texture, 36, 14);
   return (
     <span
-      className="flex h-9 w-9 shrink-0 items-center justify-center border border-black/20"
+      className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden border border-black/20"
       style={{ background: color, borderRadius: Math.min(10, radius * 1.2) }}
       aria-hidden
     >
-      <span className="h-5 w-5 rounded-[2px] bg-[var(--color-panel-2)] shadow-inner" />
+      {texture !== "smooth" && shade && (
+        <img src={shade} alt="" className="absolute inset-0 h-full w-full object-cover opacity-70 mix-blend-multiply" />
+      )}
+      <span className="relative h-5 w-5 rounded-[2px] bg-[var(--color-panel-2)] shadow-inner" />
     </span>
   );
 }
@@ -565,7 +685,7 @@ function Chip({ on, onClick, title, children }: { on: boolean; onClick: () => vo
       title={title}
       aria-pressed={on}
       onClick={onClick}
-      className={`flex flex-col items-center gap-1 rounded-lg border px-1 py-1.5 transition-colors ${
+      className={`relative flex flex-col items-center gap-1 rounded-lg border px-1 py-1.5 transition-colors ${
         on
           ? "border-[var(--accent)] bg-[var(--accent)]/[0.08] text-cream"
           : "border-cream/[0.12] text-cream/60 hover:border-cream/30 hover:text-cream"
@@ -584,6 +704,11 @@ function ProfileIcon({ p }: { p: FrameProfile }) {
     rounded: "M3 19V11a5 5 0 0 1 5-5h13v13",
     stepped: "M3 19V6h9v4h9v9",
     cove: "M3 19V6h6c0 5 6 6 12 6v7",
+    bevel: "M3 19V6h6l12 5v8",
+    scoop: "M3 19V6h5c2 6 6 6 9 0h4v13",
+    ogee: "M3 19V6h5c4 0 4 6 8 6h5v7",
+    bead: "M3 19V9h13a2.5 2.5 0 0 1 5 0v10",
+    tiered: "M3 19V6h6v3h6v3h6v7",
   };
   return (
     <svg width="22" height="16" viewBox="0 0 24 22" fill="none" aria-hidden>
@@ -594,10 +719,14 @@ function ProfileIcon({ p }: { p: FrameProfile }) {
 
 /** A small shaded preview of a texture, drawn from the same function the frame uses. */
 function TextureSwatch({ t }: { t: FrameTexture }) {
-  const url = useMemo(() => {
-    if (typeof document === "undefined") return "";
-    const N = 44;
-    const span = 16; // mm shown
+  const url = useTextureUrl(t, 44, 16);
+  return <img src={url || undefined} alt="" className="h-9 w-full rounded-md object-cover" />;
+}
+
+/** Grey shaded image of a texture, `N` px square showing `span` mm. */
+function useTextureUrl(t: FrameTexture, N: number, span: number) {
+  return useMemo(() => {
+    if (typeof document === "undefined" || t === "custom") return "";
     const c = document.createElement("canvas");
     c.width = c.height = N;
     const ctx = c.getContext("2d");
@@ -619,8 +748,5 @@ function TextureSwatch({ t }: { t: FrameTexture }) {
     }
     ctx.putImageData(img, 0, 0);
     return c.toDataURL();
-  }, [t]);
-  return (
-    <img src={url || undefined} alt="" className="h-9 w-full rounded-md object-cover" />
-  );
+  }, [t, N, span]);
 }

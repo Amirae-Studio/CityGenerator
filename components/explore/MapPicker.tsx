@@ -74,7 +74,7 @@ import {
   type ShapeKind,
   type Vec2,
 } from "@/lib/explore/geo";
-import { PRINT_MM } from "@/lib/explore/buildModel";
+import { PRINT_MM } from "@/lib/explore/printSize";
 
 /*
  * Basemaps: Mapbox GL JS drawing Mapbox Standard (the same engine and data

@@ -116,3 +116,10 @@ export type SdkModule = {
 
 /** The reserved key MakerLab uses for the commercial license. */
 export const COMMERCIAL_KEY = "commercial_eeee";
+
+/**
+ * City Generator Pro ($6): one paid feature (partial_buyout) that unlocks the
+ * premium frame looks, edges, textures, custom SVG pattern and Optimize roads.
+ * Never rename it once published — MakerLab keys purchases by it.
+ */
+export const PRO_KEY = "pro_pack";

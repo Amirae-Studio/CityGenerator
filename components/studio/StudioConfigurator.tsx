@@ -30,6 +30,9 @@ import { useMakerLab } from "@/lib/makerlab/MakerLabProvider";
 import { buildObj, captureCover, type ObjPart } from "@/lib/makerlab/obj";
 import type { ExportArtifactInput } from "@/lib/makerlab/types";
 import { CommercialLicenseButton } from "@/components/CommercialLicenseButton";
+import { BuyProButton } from "@/components/ProUpsell";
+import { usePro } from "@/lib/makerlab/usePro";
+import { PRO_ELSEWHERE, ProBadge } from "@/components/ProUpsell";
 import { ROAD_KINDS, roadPartKey, type RoadKind } from "@/lib/explore/roads";
 
 
@@ -163,6 +166,15 @@ export function StudioConfigurator({
     () => ROAD_KINDS.filter((k) => modelFiles.some((f) => f.partKey === roadPartKey(k.key))),
     [modelFiles]
   );
+
+  /** City Generator Pro: Optimize roads needs it. */
+  const pro = usePro();
+  const [roadNote, setRoadNote] = useState<string | null>(null);
+  /** Runs a Pro road action after requestAccess resolves (pro_pack, or commercial_eeee for its owners). */
+  const withPro = (apply: () => void) => {
+    if (!pro.owned && !pro.available) return setRoadNote(PRO_ELSEWHERE);
+    void pro.unlock().then((ok) => ok && apply());
+  };
 
   useEffect(() => {
     if (
@@ -661,6 +673,7 @@ export function StudioConfigurator({
 
         <div className="flex shrink-0 items-center gap-3">
           {onBack && <StepPills step={2} />}
+          <BuyProButton />
           <CommercialLicenseButton />
           <ThemeToggle />
           <button
@@ -1051,15 +1064,23 @@ export function StudioConfigurator({
                                     kinds={roadKinds}
                                     hidden={cityCtl.hiddenRoadKinds}
                                     optimize={cityCtl.optimizeRoads}
-                                    onToggle={(kind) =>
-                                      setCtl(
-                                        "hiddenRoadKinds",
-                                        cityCtl.hiddenRoadKinds.includes(kind)
-                                          ? cityCtl.hiddenRoadKinds.filter((k) => k !== kind)
-                                          : [...cityCtl.hiddenRoadKinds, kind]
-                                      )
-                                    }
-                                    onOptimize={(v) => setCtl("optimizeRoads", v)}
+                                    // Road types is a Pro feature: hiding a type or turning
+                                    // Optimize on goes through requestAccess every time.
+                                    // Undoing it (showing roads again) is always free.
+                                    onToggle={(kind) => {
+                                      setRoadNote(null);
+                                      if (cityCtl.hiddenRoadKinds.includes(kind)) {
+                                        return setCtl("hiddenRoadKinds", cityCtl.hiddenRoadKinds.filter((k) => k !== kind));
+                                      }
+                                      withPro(() => setCtl("hiddenRoadKinds", [...cityCtl.hiddenRoadKinds, kind]));
+                                    }}
+                                    proOwned={pro.owned}
+                                    note={roadNote}
+                                    onOptimize={(v) => {
+                                      setRoadNote(null);
+                                      if (!v) return setCtl("optimizeRoads", false);
+                                      withPro(() => setCtl("optimizeRoads", true));
+                                    }}
                                   />
                                 )}
                                 <p className="m-0 text-[11px] leading-snug text-cream/45">
@@ -1311,23 +1332,37 @@ function RoadTypesPanel({
   optimize,
   onToggle,
   onOptimize,
+  proOwned,
+  note,
 }: {
   kinds: { key: RoadKind; label: string; main: boolean }[];
   hidden: string[];
   optimize: boolean;
   onToggle: (kind: RoadKind) => void;
   onOptimize: (on: boolean) => void;
+  /** Display only: shows the Pro lock until the user has Pro (or the commercial license). */
+  proOwned: boolean;
+  note: string | null;
 }) {
   const hasMinor = kinds.some((k) => !k.main);
   const isShown = (k: { key: RoadKind; main: boolean }) => !(optimize && !k.main) && !hidden.includes(k.key);
   return (
     <div className="mt-1 flex flex-col gap-2 rounded-xl border border-cream/[0.14] bg-cream/[0.03] p-2.5">
       <div className="flex items-center justify-between px-0.5">
-        <span className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-cream/45">Road types</span>
+        <span className="flex items-center gap-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-cream/45">
+          Road types
+          <ProBadge owned={proOwned} />
+        </span>
         <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-cream/35">
           {kinds.filter(isShown).length}/{kinds.length} shown
         </span>
       </div>
+      {!proOwned && (
+        <p className="m-0 px-0.5 text-[11px] leading-snug text-cream/50">
+          With Pro, hide any type of road — or keep only the main roads in one tap.
+        </p>
+      )}
+      {note && <p className="m-0 px-0.5 text-[11px] leading-snug text-cream/60">{note}</p>}
 
       {hasMinor && (
         <div className={`rounded-lg border p-2 ${optimize ? "seg-on border-transparent" : "border-cream/[0.1]"}`}>
