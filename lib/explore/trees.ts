@@ -1,5 +1,6 @@
-// Tree models for Explore World: built in code (or custom STLs in
-// public/trees when USE_STL_FILES is on).
+// Tree models for Explore World: the STLs bundled in public/trees (shipped
+// with the app, so no extra host in the CSP), or simple shapes built in code
+// when USE_STL_FILES is off or a file fails to load.
 // Each one is loaded once, turned Y-up, stood on its trunk at the origin and
 // scaled to one unit tall, so the model builder can stamp copies of it.
 
@@ -40,8 +41,8 @@ export function loadTree(id: TreeModelId): Promise<TreeTemplate> {
   return p;
 }
 
-/** Set to true after putting tree1.stl … tree3.stl in public/trees to use them. */
-const USE_STL_FILES = false;
+/** Uses public/trees/tree1.stl … tree3.stl; false → the shapes built in code. */
+const USE_STL_FILES = true;
 
 async function fetchTree(id: TreeModelId): Promise<TreeTemplate> {
   if (!USE_STL_FILES) return normalize(id, builtInTree(id));
