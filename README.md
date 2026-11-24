@@ -157,13 +157,16 @@ names. See `neutralConfig` in `components/explore/MapPicker.tsx`.
 2. **Street style (optional).** In Mapbox Studio, style a map built on
    **Standard** (colours, light preset, font…) and publish it. Copy its URL,
    e.g. `mapbox://styles/yourname/abc123`. Without one the app uses plain
-   Standard.
+   Standard. Optionally a second one for dark mode
+   (`NEXT_PUBLIC_MAPBOX_STREET_STYLE_DARK`); without it dark mode keeps the
+   light street style.
 3. **Satellite style (optional).** Same, built on Standard Satellite.
 4. **`.env`** (copy `.env.example`):
 
    ```
    NEXT_PUBLIC_MAPBOX_TOKEN=pk....
    NEXT_PUBLIC_MAPBOX_STREET_STYLE=mapbox://styles/yourname/abc123
+   NEXT_PUBLIC_MAPBOX_STREET_STYLE_DARK=mapbox://styles/yourname/ghi789
    NEXT_PUBLIC_MAPBOX_SATELLITE_STYLE=mapbox://styles/yourname/def456
    ```
 
@@ -175,11 +178,13 @@ ID), the map shows a message instead of going blank.
 
 **Cost.** Mapbox GL JS is billed per **map load** (each time the map opens;
 panning and zooming are free): 50,000 a month free, then from $5 per 1,000
-(check mapbox.com/pricing). Switching street ↔ satellite reloads the style
-but is the same map, not a new load.
+(check mapbox.com/pricing). Switching street ↔ satellite, or light ↔ dark,
+reloads the style but is the same map, not a new load.
 
 ## Optional setup
 
-- Tree styles (Classic, Leafy, Grand) are built in code. To use your own
-  models, put `tree1.stl` … `tree3.stl` in `public/trees/` and set
-  `USE_STL_FILES = true` in `lib/explore/trees.ts`.
+- Tree styles come from `public/trees/tree1.stl` … `tree3.stl`, bundled with
+  the app. Replace those files to change them (any size or orientation: each
+  is stood on its trunk, scaled and simplified to ~1,500 triangles on load).
+  `USE_STL_FILES = false` in `lib/explore/trees.ts` switches back to the
+  simple shapes built in code.

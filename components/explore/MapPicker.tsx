@@ -75,6 +75,7 @@ import {
   type Vec2,
 } from "@/lib/explore/geo";
 import { PRINT_MM } from "@/lib/explore/buildModel";
+import { useTheme } from "@/lib/theme";
 
 /*
  * Basemaps: Mapbox GL JS drawing Mapbox Standard (the same engine and data
@@ -96,8 +97,14 @@ function styleUrl(v?: string) {
   return id ? `mapbox://styles/${id}` : undefined;
 }
 const STREET_STYLE = styleUrl(import.meta.env.NEXT_PUBLIC_MAPBOX_STREET_STYLE) ?? "mapbox://styles/mapbox/standard";
+/** Street style used in dark mode; falls back to the light one when unset. */
+const STREET_STYLE_DARK = styleUrl(import.meta.env.NEXT_PUBLIC_MAPBOX_STREET_STYLE_DARK) ?? STREET_STYLE;
 const SATELLITE_STYLE =
   styleUrl(import.meta.env.NEXT_PUBLIC_MAPBOX_SATELLITE_STYLE) ?? "mapbox://styles/mapbox/standard-satellite";
+/** The Mapbox style for a view: satellite, or the street style for the theme. */
+function mapboxStyle(satellite: boolean, dark: boolean) {
+  return satellite ? SATELLITE_STYLE : dark ? STREET_STYLE_DARK : STREET_STYLE;
+}
 
 /*
  * Which map to use: Mapbox (above) or the free map.
@@ -364,6 +371,9 @@ export function MapPicker({
   const ready = styleGen > 0;
   const [satellite, setSatellite] = useState(false); // street map by default
   const satelliteRef = useRef(satellite);
+  // Dark mode swaps the Mapbox street style (satellite and the free map stay).
+  const dark = useTheme().mode === "dark";
+  const darkRef = useRef(dark);
   /** Mapbox or the free map; switches to free on its own if Mapbox fails. */
   const [provider, setProvider] = useState<Provider>(START_PROVIDER);
   /** Bumped when a map engine finishes loading, so the map effect runs again. */
@@ -585,9 +595,7 @@ export function MapPicker({
     // A new map (first run, or after switching provider) has no overlay yet.
     setStyleGen(0);
     const firstStyle = isMapbox
-      ? satelliteRef.current
-        ? SATELLITE_STYLE
-        : STREET_STYLE
+      ? mapboxStyle(satelliteRef.current, darkRef.current)
       : satelliteRef.current
         ? FREE_SATELLITE_STYLE
         : BLANK_STYLE; // the free street style is fetched just below
@@ -679,7 +687,7 @@ export function MapPicker({
       }
       const meta = document.querySelector('meta[http-equiv="Content-Security-Policy" i]')?.getAttribute("content");
       if (meta) out.push(`meta CSP: ${meta.slice(0, 160)}`);
-      const styleHttp = STREET_STYLE.replace("mapbox://styles/", "https://api.mapbox.com/styles/v1/");
+      const styleHttp = mapboxStyle(false, darkRef.current).replace("mapbox://styles/", "https://api.mapbox.com/styles/v1/");
       for (const [name, url] of [
         ["Mapbox", `${styleHttp}?access_token=${MAPBOX_TOKEN}`],
         ["Photon", "https://photon.komoot.io/api/?q=paris&limit=1"],
@@ -1102,18 +1110,25 @@ export function MapPicker({
     opened.current = true;
   }, [locked, ready, fitFrame]);
 
-  // Street ↔ satellite: load the other style; style.load re-adds the overlay.
+  // Street ↔ satellite, and light ↔ dark street style: load the other style;
+  // style.load re-adds the overlay.
   useEffect(() => {
-    if (satelliteRef.current === satellite) return;
+    const was = mapboxStyle(satelliteRef.current, darkRef.current);
+    const satelliteChanged = satelliteRef.current !== satellite;
     satelliteRef.current = satellite;
+    darkRef.current = dark;
     const map = mapRef.current;
     if (!map) return;
     if (provider === "mapbox") {
-      map.setStyle(satellite ? SATELLITE_STYLE : STREET_STYLE, {
+      const next = mapboxStyle(satellite, dark);
+      if (next === was) return;
+      map.setStyle(next, {
         config: { [BASEMAP]: neutralConfig(map.getZoom()) },
         localFontFamily: undefined,
         localIdeographFontFamily: undefined,
       });
+    } else if (!satelliteChanged) {
+      return; // the free map has one street style for both themes
     } else if (satellite) {
       // diff: false → a full reload, so style.load re-adds the frame overlay.
       map.setStyle(FREE_SATELLITE_STYLE as never, { diff: false } as never);
@@ -1124,7 +1139,7 @@ export function MapPicker({
         })
         .catch((err: Error) => setMapIssue(`Couldn't load the street map: ${err.message}`));
     }
-  }, [satellite, provider]);
+  }, [satellite, dark, provider]);
 
   /** Search result: the frame moves to the place and the camera follows. */
   function flyToHit(hit: SearchHit) {

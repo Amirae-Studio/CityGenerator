@@ -5,6 +5,8 @@ interface ImportMetaEnv {
   readonly NEXT_PUBLIC_MAPBOX_TOKEN?: string;
   /** Optional Mapbox Studio street style built on Standard; defaults to mapbox/standard. */
   readonly NEXT_PUBLIC_MAPBOX_STREET_STYLE?: string;
+  /** Optional street style for dark mode; defaults to the light street style. */
+  readonly NEXT_PUBLIC_MAPBOX_STREET_STYLE_DARK?: string;
   /** Optional Mapbox Studio satellite style; defaults to mapbox/standard-satellite. */
   readonly NEXT_PUBLIC_MAPBOX_SATELLITE_STYLE?: string;
   /** "false" → always the free map (MapLibre + Esri/OpenFreeMap). Unset/"true" → Mapbox when a token is set. */
