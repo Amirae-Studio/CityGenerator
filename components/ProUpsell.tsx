@@ -144,12 +144,11 @@ export function BuyProButton() {
         type="button"
         onClick={() => setOpen(true)}
         title="See everything in City Generator Pro"
-        className="hidden items-center gap-1.5 rounded-full px-3.5 py-[8px] text-[12px] font-medium text-[#3a2a00] transition-transform hover:scale-[1.03] sm:inline-flex"
-        style={{ background: "#f0c341" }}
+        // Same look as MakerWorld's own "Upgrade Plan" button.
+        className="hidden items-center rounded-lg px-4 py-[7px] text-[14px] font-semibold transition-[filter] hover:brightness-[0.97] sm:inline-flex"
+        style={{ background: "linear-gradient(90deg, #fff4d6, #ffe5bf)", color: "#8a4b12" }}
       >
-        <Crown size={13} />
         Buy Pro
-        {pro.price && <span className="font-mono font-bold">{pro.price}</span>}
       </button>
       <ProModal open={open} onClose={() => setOpen(false)} />
     </>

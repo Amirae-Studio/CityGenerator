@@ -4,7 +4,6 @@ import { Check, Globe2 } from "lucide-react";
 import { DEFAULT_LAYER_COLORS, FILAMENT_LINES } from "@/lib/studio";
 import type { ModelFile } from "@/lib/types";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { CommercialLicenseButton } from "@/components/CommercialLicenseButton";
 import { BuyProButton } from "@/components/ProUpsell";
 import Scrubber from "@/components/ui/Scrubber";
 import { BackButton } from "@/components/ui/BackButton";
@@ -246,7 +245,6 @@ export function ExploreWorld() {
         <div className="flex shrink-0 items-center gap-3">
           <StepPills step={phase === "map" || phase === "scanning" ? 0 : 1} />
           <BuyProButton />
-          <CommercialLicenseButton compact />
           <ThemeToggle />
         </div>
       </header>

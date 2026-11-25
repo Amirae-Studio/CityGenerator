@@ -29,7 +29,6 @@ import { TerrainModePicker, type TerrainChoice } from "@/components/explore/Terr
 import { useMakerLab } from "@/lib/makerlab/MakerLabProvider";
 import { buildObj, captureCover, type ObjPart } from "@/lib/makerlab/obj";
 import type { ExportArtifactInput } from "@/lib/makerlab/types";
-import { CommercialLicenseButton } from "@/components/CommercialLicenseButton";
 import { BuyProButton } from "@/components/ProUpsell";
 import { usePro } from "@/lib/makerlab/usePro";
 import { PRO_ELSEWHERE, ProBadge } from "@/components/ProUpsell";
@@ -674,7 +673,6 @@ export function StudioConfigurator({
         <div className="flex shrink-0 items-center gap-3">
           {onBack && <StepPills step={2} />}
           <BuyProButton />
-          <CommercialLicenseButton />
           <ThemeToggle />
           <button
             onClick={openFrame}
