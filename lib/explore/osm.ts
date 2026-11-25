@@ -426,6 +426,29 @@ function frameBBox(shape: FrameShape) {
   return { clip, s, w, n, e };
 }
 
+/** Buildings and building:parts only, straight from OpenStreetMap — null if Overpass doesn't answer in time. */
+async function osmBuildings(
+  s: number,
+  w: number,
+  n: number,
+  e: number,
+  shape: FrameShape,
+  clip: Vec2[],
+  signal?: AbortSignal
+): Promise<OsmBuilding[] | null> {
+  const bb = `(${s},${w},${n},${e})`;
+  const query = `[out:json][timeout:25];(way["building"]${bb};relation["building"]${bb};way["building:part"]${bb};relation["building:part"]${bb};);out geom qt;`;
+  try {
+    const els = await fetchOverpass(query, signal, 25000);
+    const list = parseElements(els, shape.center, clip).buildings;
+    return list.length ? list : null;
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    console.warn("[explore] OSM buildings unavailable too, using tile buildings", err);
+    return null;
+  }
+}
+
 /** Full feature set straight from Overpass (fallback source). */
 export async function fetchOsmData(shape: FrameShape, signal?: AbortSignal): Promise<OsmData> {
   const { clip, s, w, n, e } = frameBBox(shape);
@@ -471,13 +494,19 @@ export async function fetchMapData(shape: FrameShape, signal?: AbortSignal): Pro
     return { ...(await fetchOsmData(shape, signal)), detailed: true };
   }
 
-  const buildings = await detailed;
+  let buildings = await detailed;
   // An empty answer for an area the tiles say is built up is a bad reply.
-  if (buildings && (buildings.length || !data.buildings.length)) {
+  if (buildings && !buildings.length && data.buildings.length) {
+    console.warn("[explore] Overture returned no buildings here");
+    buildings = null;
+  }
+  // Overture down: OpenStreetMap itself (Overpass) has the same buildings and
+  // building:parts, so landmarks keep their real shape. Tile blocks are the
+  // last resort.
+  if (!buildings) buildings = await osmBuildings(s, w, n, e, shape, clip, signal);
+  if (buildings) {
     data.buildings = buildings;
     data.detailed = true;
-  } else if (buildings) {
-    console.warn("[explore] Overture returned no buildings here, using tile buildings");
   }
   // Government LOD2 models win where they have a building; OSM fills the gaps
   // (buildings newer than the survey, or areas the model doesn't cover).

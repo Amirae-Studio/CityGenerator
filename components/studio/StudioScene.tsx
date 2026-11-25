@@ -1,5 +1,5 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { Canvas, useLoader } from "@react-three/fiber";
+import { Canvas, useLoader, useThree } from "@react-three/fiber";
 import {
   OrbitControls,
   TransformControls,
@@ -9,16 +9,38 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
-import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 const dracoLoader = new DRACOLoader();
 // Decoders ship with the app (public/draco) — no third-party script host.
 dracoLoader.setDecoderPath(new URL("draco/", document.baseURI).href);
-import { MM, DEFAULT_LAYER_COLORS, type CityControls } from "@/lib/studio";
+import { MM, DEFAULT_LAYER_COLORS, isDefaultEdit, type BuildingEdits, type CityControls } from "@/lib/studio";
+import {
+  BUILDING_LAYERS,
+  groundSampler,
+  indexBuildingLayer,
+  layerColor,
+  layerScale,
+  groundOffset,
+  outline,
+  placeMesh,
+  splitBuildings,
+  type BuildingLayer,
+} from "./buildingEditor";
 import { MINOR_ROAD_KINDS } from "@/lib/explore/roads";
 import type { ModelFile } from "@/lib/types";
 
 export type GizmoMode = "translate" | "rotate" | "scale";
+
+/** Pro "Edit buildings": what's selected / changed, and how the scene reports picks and drags. */
+export type BuildingEditor = {
+  editing: boolean;
+  selected: string[];
+  edits: BuildingEdits;
+  /** replace: select only this · toggle: add/remove (Shift/Ctrl) · clear: nothing selected */
+  onPick: (id: string | null, how: "replace" | "toggle" | "clear") => void;
+  /** New ground offsets for the dragged buildings — once, when the drag ends (the drag itself is previewed in the scene). */
+  onMove: (offsets: Record<string, { dx: number; dz: number }>) => void;
+};
 // null hides the gizmo: size and placement are then set from the side panel.
 
 /** A printable frame shown around the model: geometry in mm, Z up, back at z = 0. */
@@ -171,12 +193,14 @@ function CityAssembly({
   files,
   mode,
   controls,
+  buildings,
   onTarget,
   onTransform,
 }: {
   files: ModelFile[];
   mode: GizmoMode | null;
   controls: CityControls;
+  buildings?: BuildingEditor;
   onTarget: (o: THREE.Object3D | null) => void;
   onTransform: (o: THREE.Object3D) => void;
 }) {
@@ -195,15 +219,12 @@ function CityAssembly({
     object,
     scale,
     center,
-    halfHeight,
     layerInfo,
     upAxis,
-    horizAxes,
-    baseDimensions,
     terrainBottomAtRest,
-    terrainHeightAtRest,
     boxMin,
-    boxMax,
+    buildingLayers,
+    groundAt,
   } = useMemo(() => {
     const object = new THREE.Group();
 
@@ -298,8 +319,6 @@ function CityAssembly({
       upAxis = s.x < s.y ? (s.x < s.z ? "x" : "z") : s.y < s.z ? "y" : "z";
     }
 
-    const horizAxes = AXES.filter((a) => a !== upAxis) as [Axis, Axis];
-
     // Per-layer anchors (at rest): base along up-axis, centre elsewhere.
     const layerInfo = new Map<
       string,
@@ -316,16 +335,7 @@ function CityAssembly({
       });
     });
 
-    // Compute bounding box ONLY for city model layers (excluding revit and boolean_cube)
-    const box = new THREE.Box3();
-    object.children.forEach((layer) => {
-      if (layer.name !== "revit" && !layer.name.startsWith("boolean_cube")) {
-        box.expandByObject(layer);
-      }
-    });
-    if (box.isEmpty()) {
-      box.setFromObject(object);
-    }
+    const box = new THREE.Box3().setFromObject(object);
 
     const size = new THREE.Vector3();
     const center = new THREE.Vector3();
@@ -333,60 +343,47 @@ function CityAssembly({
     box.getCenter(center);
 
     const boxMin = box.min.clone();
-    const boxMax = box.max.clone();
 
     const terrainInfo = layerInfo.get("terrain");
     const terrainBottomAtRest = terrainInfo
       ? terrainInfo.min[upAxis]
       : box.min[upAxis];
-    const terrainHeightAtRest = terrainInfo
-      ? terrainInfo.max[upAxis] - terrainInfo.min[upAxis]
-      : 0;
 
     const scale = TARGET_SIZE / (Math.max(size.x, size.y, size.z) || 1);
 
-    // Create dynamic Revit base frame mesh underneath the terrain
-    // 1 Three.js world unit = 50 mm = 5 cm (MM = 1 / 50).
-    // 1 cm height = 10 mm = 10 * MM = 0.2 world units.
-    // In object space, 1 cm height is (10 * MM) / scale.
-    const baseHeight0 = (10 * MM) / scale;
-    const baseWidth0 = (size[horizAxes[0]] || 1) + (20 * MM) / scale;
-    const baseDepth0 = (size[horizAxes[1]] || 1) + (20 * MM) / scale;
+    // Single buildings, for the Pro building editor (generated, Y-up models only).
+    const buildingLayers: BuildingLayer[] = [];
+    let terrainMesh: THREE.Mesh | null = null;
+    if (upAxis === "y") {
+      for (const name of BUILDING_LAYERS) {
+        let mesh: THREE.Mesh | null = null;
+        object.getObjectByName(name)?.traverse((o) => {
+          const m = o as THREE.Mesh;
+          if (!mesh && m.isMesh && m.geometry?.attributes._anchor) mesh = m;
+        });
+        const L = mesh && indexBuildingLayer(name, mesh);
+        if (L) buildingLayers.push(L);
+      }
+      object.getObjectByName("terrain")?.traverse((o) => {
+        if (!terrainMesh && (o as THREE.Mesh).isMesh) terrainMesh = o as THREE.Mesh;
+      });
+    }
 
-    const revitGeom = new THREE.BoxGeometry(1, 1, 1);
-    const revitMat = new THREE.MeshStandardMaterial({
-      color: "#e9e6df",
-      roughness: 0.65,
-      metalness: 0.05,
-    });
-    const revitMesh = new THREE.Mesh(revitGeom, revitMat);
-    revitMesh.name = "revit";
-    revitMesh.castShadow = true;
-    revitMesh.receiveShadow = true;
-    revitMesh.visible = false;
-    object.add(revitMesh);
     return {
       object,
       scale,
       center,
-      halfHeight: (size.y * scale) / 2,
       layerInfo,
       upAxis,
-      horizAxes,
-      baseDimensions: {
-        width: baseWidth0,
-        depth: baseDepth0,
-        height: baseHeight0,
-      },
       terrainBottomAtRest,
-      terrainHeightAtRest,
       boxMin,
-      boxMax,
+      buildingLayers,
+      groundAt: groundSampler(terrainMesh),
     };
   }, [glbFiles, stlFiles, gltfs, stls]);
 
   // Compute dynamic Y bounds so the entire model assembly rests above the checkerboard bed plate.
-  const { lowestY, totalHeight } = useMemo(() => {
+  const lowestY = useMemo(() => {
     const sTerrain = controls.terrain / 100;
     const terrainInfo = layerInfo.get("terrain");
     const totalH = terrainInfo ? terrainInfo.max[upAxis] - terrainInfo.min[upAxis] : 0;
@@ -395,34 +392,17 @@ function CityAssembly({
 
     // Water scales upward from its own bottom and never reaches below the
     // terrain, so it has no say in where the tile's base sits.
-    const effectiveBottom = currentTerrainBottom;
-
-    const REVIT_OVERLAP = 0.015;
-    const h = baseDimensions.height * (controls.revitHeight / 100);
-    const revitBottom = effectiveBottom + REVIT_OVERLAP - h;
-    const lowestPoint = controls.enableRevit
-      ? Math.min(effectiveBottom, revitBottom)
-      : effectiveBottom;
-    const lowestY = Math.min(boxMin[upAxis], lowestPoint);
-    const totalHeight = boxMax[upAxis] - lowestY;
-    return { lowestY, totalHeight };
+    return Math.min(boxMin[upAxis], currentTerrainBottom);
   }, [
-    controls.enableRevit,
-    controls.revitHeight,
     controls.terrain,
     terrainBottomAtRest,
-    baseDimensions,
     boxMin,
-    boxMax,
     upAxis,
     layerInfo,
   ]);
 
 
   // Apply the Manipulate City controls, non-destructively.
-  // When the revit frame is enabled, we also run a CSG boolean subtraction:
-  // every mesh whose name starts with "boolean_cube" is carved out of the
-  // revit geometry so the frame disappears in those footprints.
   useEffect(() => {
     const sTerrain = controls.terrain / 100;
 
@@ -436,7 +416,8 @@ function CityAssembly({
       const anchored: THREE.Mesh[] = [];
       layer.traverse((o) => {
         const m = o as THREE.Mesh;
-        if (m.isMesh && m.geometry?.attributes._anchor && m.userData.origPosition) anchored.push(m);
+        // Lifted-out buildings are placed by the building editor (below).
+        if (m.isMesh && m.geometry?.attributes._anchor && m.userData.origPosition && !m.userData.buildingId) anchored.push(m);
       });
       if (!anchored.length) return false;
       layer.scale.set(1, 1, 1);
@@ -485,7 +466,6 @@ function CityAssembly({
     // Deform terrain base block from bottom up — top surface topography (t=1) stays fixed (0 delta).
     const terrainLayer = object.getObjectByName("terrain");
     const terrainInfo = layerInfo.get("terrain");
-    let currentTerrainBottom = terrainBottomAtRest;
     let terrainOffset = 0;
     if (terrainLayer && terrainInfo) {
       const minY = terrainInfo.min[upAxis];
@@ -494,7 +474,6 @@ function CityAssembly({
       const topThreshold = minY + 0.35 * totalH;
       const baseHeight = topThreshold - minY;
       terrainOffset = (sTerrain - 1) * baseHeight;
-      currentTerrainBottom = minY - terrainOffset;
 
       terrainLayer.position.set(0, 0, 0);
       terrainLayer.scale.set(1, 1, 1);
@@ -567,184 +546,6 @@ function CityAssembly({
 
 
 
-    // Hide boolean_cube layer (subtraction volume only)
-    object.children.forEach((layer) => {
-      if (layer.name.startsWith("boolean_cube")) {
-        layer.visible = false;
-      }
-    });
-    object.traverse((o) => {
-      if (o.name.startsWith("boolean_cube")) {
-        o.visible = false;
-      }
-    });
-
-    // Apply Revit base frame layer controls — inserted below currentTerrainBottom.
-    const revitLayer = object.getObjectByName("revit") as THREE.Mesh | undefined;
-    if (revitLayer) {
-      revitLayer.visible = !!controls.enableRevit;
-      if (controls.enableRevit) {
-        const h = baseDimensions.height * (controls.revitHeight / 100);
-        const wScale = controls.revitUniformScale
-          ? controls.revitUniform / 100
-          : controls.revitWidth / 100;
-        const dScale = controls.revitUniformScale
-          ? controls.revitUniform / 100
-          : controls.revitBreadth / 100;
-        const w = baseDimensions.width * wScale;
-        const d = baseDimensions.depth * dScale;
-
-        object.updateMatrixWorld(true);
-
-        const REVIT_OVERLAP = 0.015;
-        const rx = center[horizAxes[0]];
-        const ry = currentTerrainBottom + REVIT_OVERLAP - h / 2;
-        const rz = center[horizAxes[1]];
-
-        // When water is enabled, boolean_cube masking is skipped — revit fills the full footprint.
-        // When water is off, boolean_cube volumes carve openings into the revit slab as usual.
-        const localBoolMeshes: THREE.Mesh[] = [];
-        if (!controls.enableWater) {
-          object.children.forEach((layer) => {
-            if (layer.name.startsWith("boolean_cube")) {
-              layer.traverse((child) => {
-                const mesh = child as THREE.Mesh;
-                if (mesh.isMesh && mesh.geometry) {
-                  const localMatrix = new THREE.Matrix4().identity();
-                  let curr: THREE.Object3D | null = mesh;
-                  while (curr && curr !== object) {
-                    localMatrix.premultiply(curr.matrix);
-                    curr = curr.parent;
-                  }
-                  const cloneGeom = mesh.geometry.clone();
-                  cloneGeom.applyMatrix4(localMatrix);
-                  const localMesh = new THREE.Mesh(
-                    cloneGeom,
-                    new THREE.MeshBasicMaterial({ side: THREE.DoubleSide })
-                  );
-                  localMesh.matrixWorld.identity();
-                  localBoolMeshes.push(localMesh);
-                }
-              });
-            }
-          });
-        }
-
-        // Set up Raycaster along upAxis
-        const raycaster = new THREE.Raycaster();
-        const rayDir = new THREE.Vector3();
-        rayDir[upAxis] = -1;
-
-        const rayHeight = boxMax[upAxis] + 100;
-        const rayOrigin = new THREE.Vector3();
-
-        // Build merged Revit geometry using 2D grid raycasting + greedy box merging.
-        // Adjacent solid cells are merged into maximal rectangular boxes, producing clean,
-        // straight vertical walls with zero missing chunks under bridges or unmasked regions.
-        const GRID_X = 60;
-        const GRID_Z = 60;
-        const cellW = w / GRID_X;
-        const cellD = d / GRID_Z;
-
-        const mask: boolean[][] = Array.from({ length: GRID_X }, () => Array(GRID_Z).fill(false));
-
-        for (let ix = 0; ix < GRID_X; ix++) {
-          for (let iz = 0; iz < GRID_Z; iz++) {
-            const cx = rx - w / 2 + (ix + 0.5) * cellW;
-            const cz = rz - d / 2 + (iz + 0.5) * cellD;
-
-            let isMasked = false;
-            if (localBoolMeshes.length > 0) {
-              rayOrigin[upAxis] = rayHeight;
-              rayOrigin[horizAxes[0]] = cx;
-              rayOrigin[horizAxes[1]] = cz;
-
-              raycaster.set(rayOrigin, rayDir);
-              const hits = raycaster.intersectObjects(localBoolMeshes, false);
-              if (hits.length > 0) {
-                isMasked = true;
-              }
-            }
-            mask[ix][iz] = !isMasked;
-          }
-        }
-
-
-        const visited: boolean[][] = Array.from({ length: GRID_X }, () => Array(GRID_Z).fill(false));
-        const mergedGeoms: THREE.BufferGeometry[] = [];
-
-        for (let ix = 0; ix < GRID_X; ix++) {
-          for (let iz = 0; iz < GRID_Z; iz++) {
-            if (mask[ix][iz] && !visited[ix][iz]) {
-              let runW = 1;
-              while (ix + runW < GRID_X && mask[ix + runW][iz] && !visited[ix + runW][iz]) {
-                runW++;
-              }
-
-              let runD = 1;
-              let canExpandZ = true;
-              while (iz + runD < GRID_Z && canExpandZ) {
-                for (let k = 0; k < runW; k++) {
-                  if (!mask[ix + k][iz + runD] || visited[ix + k][iz + runD]) {
-                    canExpandZ = false;
-                    break;
-                  }
-                }
-                if (canExpandZ) runD++;
-              }
-
-              for (let kx = 0; kx < runW; kx++) {
-                for (let kz = 0; kz < runD; kz++) {
-                  visited[ix + kx][iz + kz] = true;
-                }
-              }
-
-              const boxW = runW * cellW;
-              const boxD = runD * cellD;
-              const boxCx = rx - w / 2 + (ix + runW / 2) * cellW;
-              const boxCz = rz - d / 2 + (iz + runD / 2) * cellD;
-
-              const geom = new THREE.BoxGeometry(1, 1, 1);
-              const s = new THREE.Vector3();
-              s[upAxis] = h;
-              s[horizAxes[0]] = boxW;
-              s[horizAxes[1]] = boxD;
-              geom.scale(s.x, s.y, s.z);
-
-              const p = new THREE.Vector3();
-              p[upAxis] = ry;
-              p[horizAxes[0]] = boxCx;
-              p[horizAxes[1]] = boxCz;
-              geom.translate(p.x, p.y, p.z);
-
-              mergedGeoms.push(geom);
-            }
-          }
-        }
-
-        // Merge all cell geometries into one revit mesh geometry
-        if (mergedGeoms.length > 0) {
-          const merged = mergeGeometries(mergedGeoms);
-          if (merged) {
-            merged.computeVertexNormals();
-            if (revitLayer.geometry) revitLayer.geometry.dispose();
-            revitLayer.geometry = merged;
-          }
-          mergedGeoms.forEach((g) => g.dispose());
-        } else {
-          // All cells masked — show nothing
-          if (revitLayer.geometry) revitLayer.geometry.dispose();
-          revitLayer.geometry = new THREE.BufferGeometry();
-        }
-
-        localBoolMeshes.forEach((m) => m.geometry.dispose());
-
-        // Geometry is already in world-local coords — reset mesh transform
-        revitLayer.position.set(0, 0, 0);
-        revitLayer.scale.set(1, 1, 1);
-      }
-    }
-
     // Determine which layers have subparts
     const layerSubpartsMap = new Map<string, boolean>();
     files.forEach((f) => {
@@ -756,7 +557,6 @@ function CityAssembly({
     // Apply visibility of subparts vs monolithic
     object.children.forEach((layerGroup) => {
       const layerName = layerGroup.name;
-      if (layerName === "revit" || layerName.startsWith("boolean_cube")) return;
       const hasSubParts = !!layerSubpartsMap.get(layerName);
 
       layerGroup.traverse((child) => {
@@ -791,23 +591,6 @@ function CityAssembly({
 
     // Apply layer and sub-part colors dynamically
     object.children.forEach((layer) => {
-      if (layer.name.startsWith("boolean_cube")) return;
-
-      if (layer.name === "revit") {
-        const targetHex = controls.enableColors
-          ? controls.layerColors.terrain || DEFAULT_LAYER_COLORS.terrain || "#545454"
-          : "#e9e6df";
-        const revitMesh = layer as THREE.Mesh;
-        if (revitMesh.isMesh && revitMesh.material) {
-          if (!revitMesh.userData.clonedMat) {
-            revitMesh.material = (revitMesh.material as THREE.Material).clone();
-            revitMesh.userData.clonedMat = true;
-          }
-          (revitMesh.material as THREE.MeshStandardMaterial).color?.set(targetHex);
-        }
-        return;
-      }
-
       layer.traverse((o) => {
         const m = o as THREE.Mesh;
         if (m.isMesh && m.material) {
@@ -841,13 +624,191 @@ function CityAssembly({
     object,
     layerInfo,
     upAxis,
-    horizAxes,
-    baseDimensions,
     terrainBottomAtRest,
-    terrainHeightAtRest,
-    center,
     controls,
   ]);
+
+  // Pro building editor: lift the selected / edited buildings out of their
+  // merged layer and place each one (layer sliders × its own size, moved over
+  // the ground, standing on the terrain where it lands). Runs after the layer
+  // controls above, so it wins for these buildings.
+  const editing = !!buildings?.editing;
+  const selectedKey = editing ? (buildings?.selected ?? []).join("|") : "";
+  const edits = buildings?.edits;
+  useEffect(() => {
+    if (!buildingLayers.length) return;
+    const sel = new Set(selectedKey ? selectedKey.split("|") : []);
+    const ed = edits ?? {};
+    const lifted = [...new Set([...sel, ...Object.keys(ed).filter((id) => !isDefaultEdit(ed[id]))])];
+    for (const L of buildingLayers) {
+      const s = layerScale(L.layer, controls);
+      if (splitBuildings(L, lifted)) placeMesh(L.base, s);
+      for (const [id, part] of L.parts) {
+        const e = ed[id] ?? null;
+        const b = L.byId.get(id)!;
+        const dx = e?.dx ?? 0;
+        const dz = e?.dz ?? 0;
+        const dy = dx || dz ? (groundOffset(b, s, e, dx, dz, groundAt) ?? 0) : 0;
+        placeMesh(part, s, e, [dx, dy, dz]);
+        // What's baked into the vertices; a drag previews by moving the mesh on top.
+        part.userData.baked = { dx, dy, dz };
+        part.position.set(0, 0, 0);
+        (part.material as THREE.MeshStandardMaterial).color.set(e?.color ?? layerColor(controls, L.layer, part.userData.colorHint));
+        outline(part, sel.has(id));
+      }
+    }
+  }, [buildingLayers, groundAt, controls, selectedKey, edits]);
+
+  // Click to select (Shift / Ctrl adds), drag a selected building to move it.
+  // Listens on the window in the capture phase: the canvas's wrapper (where
+  // react-three-fiber and OrbitControls listen) stops the press before it
+  // reaches the canvas, and this way a press on a building never starts an orbit.
+  const gl = useThree((s) => s.gl);
+  const camera = useThree((s) => s.camera);
+  const orbit = useThree((s) => s.controls) as unknown as { enabled: boolean } | null;
+  const live = useRef(buildings);
+  const liveControls = useRef(controls);
+  useEffect(() => {
+    live.current = buildings;
+    liveControls.current = controls;
+  });
+  useEffect(() => {
+    if (!editing || !buildingLayers.length) return;
+    const el = gl.domElement;
+    const ray = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    const terrain = object.getObjectByName("terrain");
+    const aim = (e: PointerEvent) => {
+      const r = el.getBoundingClientRect();
+      ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+      ray.setFromCamera(ndc, camera);
+    };
+    const pick = (): { id: string; point: THREE.Vector3 } | null => {
+      const targets: THREE.Object3D[] = [];
+      for (const L of buildingLayers) targets.push(L.base, ...L.parts.values());
+      if (terrain?.visible) targets.push(terrain);
+      const hit = ray.intersectObjects(targets, true)[0];
+      if (!hit) return null;
+      const partId = hit.object.userData.buildingId as string | undefined;
+      if (partId) return { id: partId, point: hit.point };
+      const L = buildingLayers.find((l) => l.base === hit.object);
+      const owner = L && hit.faceIndex != null ? L.faceOwner[hit.faceIndex] : undefined;
+      return owner ? { id: owner.id, point: hit.point } : null;
+    };
+
+    type Drag = {
+      x: number;
+      y: number;
+      moved: boolean;
+      /** Runs on release when the pointer didn't move (a click, not a drag/orbit). */
+      onClick: (() => void) | null;
+      move: { ids: string[]; start: Record<string, { dx: number; dz: number }>; plane: THREE.Plane; from: THREE.Vector3 } | null;
+    };
+    let drag: Drag | null = null;
+    let raf = 0;
+    /** Last offsets that keep every dragged building on the land. */
+    let next: Record<string, { dx: number; dz: number; dy: number }> | null = null;
+    const find = (id: string) => {
+      const L = buildingLayers.find((l) => l.byId.has(id));
+      return L ? { L, b: L.byId.get(id)! } : null;
+    };
+    /** Moves the meshes only — React state is written once, on release. */
+    const preview = () => {
+      raf = 0;
+      if (!next) return;
+      for (const [id, o] of Object.entries(next)) {
+        const part = find(id)?.L.parts.get(id);
+        if (!part) continue; // just picked: lifted out on the next render
+        const baked = (part.userData.baked as { dx: number; dy: number; dz: number } | undefined) ?? { dx: 0, dy: 0, dz: 0 };
+        part.position.set(o.dx - baked.dx, o.dy - baked.dy, o.dz - baked.dz);
+      }
+    };
+
+    const onDown = (e: PointerEvent) => {
+      const b = live.current;
+      if (e.target !== el || e.button !== 0 || !b) return;
+      aim(e);
+      const hit = pick();
+      if (!hit) {
+        drag = { x: e.clientX, y: e.clientY, moved: false, onClick: () => b.onPick(null, "clear"), move: null };
+        return;
+      }
+      if (e.shiftKey || e.ctrlKey || e.metaKey) {
+        b.onPick(hit.id, "toggle");
+        e.stopImmediatePropagation();
+        return;
+      }
+      const already = b.selected.includes(hit.id);
+      if (!already) b.onPick(hit.id, "replace");
+      const ids = already ? b.selected : [hit.id];
+      const start = Object.fromEntries(ids.map((id) => [id, { dx: b.edits[id]?.dx ?? 0, dz: b.edits[id]?.dz ?? 0 }]));
+      drag = {
+        x: e.clientX,
+        y: e.clientY,
+        moved: false,
+        // Clicking one of several selected buildings narrows the selection to it.
+        onClick: already && b.selected.length > 1 ? () => b.onPick(hit.id, "replace") : null,
+        move: { ids, start, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 1, 0), hit.point), from: hit.point.clone() },
+      };
+      if (orbit) orbit.enabled = false;
+      e.stopImmediatePropagation();
+    };
+
+    const onMove = (e: PointerEvent) => {
+      if (!drag) return;
+      if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 4) return;
+      drag.moved = true;
+      const m = drag.move;
+      if (!m) return;
+      aim(e);
+      const p = ray.ray.intersectPlane(m.plane, new THREE.Vector3());
+      if (!p) return;
+      const a = object.worldToLocal(m.from.clone());
+      const c = object.worldToLocal(p);
+      const edits = live.current?.edits ?? {};
+      const cand: Record<string, { dx: number; dz: number; dy: number }> = {};
+      for (const id of m.ids) {
+        const f = find(id);
+        if (!f) continue;
+        const dx = m.start[id].dx + c.x - a.x;
+        const dz = m.start[id].dz + c.z - a.z;
+        const dy = groundOffset(f.b, layerScale(f.L.layer, liveControls.current), edits[id] ?? null, dx, dz, groundAt);
+        if (dy === null) return; // would leave the land: stay at the last good spot
+        cand[id] = { dx, dz, dy };
+      }
+      next = cand;
+      el.style.cursor = "grabbing";
+      if (!raf) raf = requestAnimationFrame(preview);
+    };
+
+    const onUp = () => {
+      if (!drag) return;
+      if (!drag.moved) drag.onClick?.();
+      else if (drag.move && next) {
+        cancelAnimationFrame(raf);
+        preview();
+        live.current?.onMove(Object.fromEntries(Object.entries(next).map(([id, o]) => [id, { dx: o.dx, dz: o.dz }])));
+      }
+      next = null;
+      if (drag.move && orbit) orbit.enabled = true;
+      el.style.cursor = "";
+      drag = null;
+    };
+
+    window.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("pointermove", onMove, true);
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onUp, true);
+    return () => {
+      window.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("pointermove", onMove, true);
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onUp, true);
+      cancelAnimationFrame(raf);
+      if (orbit) orbit.enabled = true;
+      el.style.cursor = "";
+    };
+  }, [editing, buildingLayers, groundAt, gl, camera, orbit, object]);
 
   return (
     <TransformTarget
@@ -941,11 +902,13 @@ export default function StudioScene({
   loading,
   files,
   cityControls,
+  buildings,
   onTarget,
   onTransform,
   frame,
 }: {
   frame?: SceneFrame | null;
+  buildings?: BuildingEditor;
   bedW: number;
   bedD: number;
   mode: GizmoMode | null;
@@ -1002,6 +965,7 @@ export default function StudioScene({
             files={files}
             mode={mode}
             controls={cityControls}
+            buildings={buildings}
             onTarget={onTarget}
             onTransform={onTransform}
           />

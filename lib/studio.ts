@@ -182,13 +182,6 @@ export type CityControls = {
   optimizeRoads: boolean;
   hideTrees: boolean;
   hideGrass: boolean;
-  // Revit sub-foundation frame layer controls
-  enableRevit: boolean;
-  revitHeight: number; // frame height/thickness (% scale)
-  revitWidth: number; // frame width (% scale) — used in independent mode
-  revitBreadth: number; // frame breadth/depth (% scale) — used in independent mode
-  revitUniformScale: boolean; // true = single slider scales W+D equally
-  revitUniform: number; // uniform W+D scale (% scale) — used when revitUniformScale = true
   // Filament Color customization
   enableColors: boolean;
   layerColors: Record<string, string>;
@@ -208,13 +201,29 @@ export const CITY_DEFAULTS: CityControls = {
   optimizeRoads: false,
   hideTrees: false,
   hideGrass: false,
-  enableRevit: false,
-  revitHeight: 50,
-  revitWidth: 95,
-  revitBreadth: 95,
-  revitUniformScale: true,
-  revitUniform: 95,
   enableColors: false,
   layerColors: {},
 };
 
+/**
+ * Pro "Edit buildings": changes to one building, on top of the layer sliders.
+ * Buildings are told apart by their ground anchor (see buildModel's `_anchor`).
+ */
+export type BuildingEdit = {
+  /** Footprint and height together, % */
+  size: number;
+  /** Extra height on top of `size`, % */
+  height: number;
+  /** Own colour, or null to follow its layer */
+  color: string | null;
+  /** Move across the ground, in the model's own units (the building follows the terrain) */
+  dx: number;
+  dz: number;
+};
+
+export const BUILDING_EDIT_DEFAULT: BuildingEdit = { size: 100, height: 100, color: null, dx: 0, dz: 0 };
+
+export type BuildingEdits = Record<string, BuildingEdit>;
+
+export const isDefaultEdit = (e: BuildingEdit) =>
+  e.size === 100 && e.height === 100 && e.color === null && e.dx === 0 && e.dz === 0;

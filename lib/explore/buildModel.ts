@@ -69,7 +69,74 @@ const MIN_WATER_BUILDING_MM = 10;
  * structures out on the water. Parts of one landmark stay or go together,
  * judged by the whole building, so a spire never loses its small pieces.
  */
+/**
+ * Pieces that stand on or inside one another — a tower's stacked sections, a
+ * spire on its base, tile buildings split by height — are one building. They
+ * get one group, so they sit on the same ground, scale together, land in the
+ * same layer and are picked as one in the Studio's building editor.
+ * Neighbours that only share a wall stay separate.
+ */
+export function clusterStacks(list: OsmBuilding[]): OsmBuilding[] {
+  const n = list.length;
+  const parent = Array.from({ length: n }, (_, i) => i);
+  const find = (i: number) => {
+    while (parent[i] !== i) i = parent[i] = parent[parent[i]];
+    return i;
+  };
+  const join = (a: number, b: number) => {
+    a = find(a);
+    b = find(b);
+    if (a !== b) parent[b] = a;
+  };
+  // Parts the source already tied together stay together.
+  const firstOf = new Map<string, number>();
+  list.forEach((b, i) => {
+    if (!b.group) return;
+    const f = firstOf.get(b.group);
+    if (f === undefined) firstOf.set(b.group, i);
+    else join(f, i);
+  });
+  // A piece whose centre lies inside another piece's footprint stands on it.
+  const CELL = 30; // metres
+  const cents = list.map((b) => centroid(b.outer));
+  const grid = new Map<string, number[]>();
+  cents.forEach((c, i) => {
+    const k = `${Math.floor(c[0] / CELL)},${Math.floor(c[1] / CELL)}`;
+    const cell = grid.get(k);
+    if (cell) cell.push(i);
+    else grid.set(k, [i]);
+  });
+  list.forEach((b, i) => {
+    const bb = bounds(b.outer);
+    for (let gx = Math.floor(bb.minX / CELL); gx <= Math.floor(bb.maxX / CELL); gx++) {
+      for (let gy = Math.floor(bb.minY / CELL); gy <= Math.floor(bb.maxY / CELL); gy++) {
+        for (const j of grid.get(`${gx},${gy}`) ?? []) {
+          if (j === i || find(i) === find(j)) continue;
+          const c = cents[j];
+          if (pointInRing(c, b.outer) && !b.holes.some((h) => pointInRing(c, h))) join(i, j);
+        }
+      }
+    }
+  });
+  const members = new Map<number, number[]>();
+  for (let i = 0; i < n; i++) {
+    const r = find(i);
+    const m = members.get(r);
+    if (m) m.push(i);
+    else members.set(r, [i]);
+  }
+  const out = list.slice();
+  for (const [root, idx] of members) {
+    if (idx.length < 2) continue;
+    const group = list[root].group ?? idx.map((i) => list[i].group).find(Boolean) ?? `stack-${root}`;
+    const main = idx.some((i) => isMainBuilding(list[i]));
+    for (const i of idx) out[i] = { ...list[i], group, main };
+  }
+  return out;
+}
+
 function printableBuildings(data: OsmData, mpm: number): { osm: OsmBuilding[]; meshes: MeshBuilding[] } {
+  const buildings = clusterStacks(data.buildings);
   const minArea = (MIN_BUILDING_MM * mpm) ** 2;
   const minWidth = MIN_BUILDING_WIDTH_MM * mpm;
   const waterArea = (MIN_WATER_BUILDING_MM * mpm) ** 2;
@@ -78,7 +145,7 @@ function printableBuildings(data: OsmData, mpm: number): { osm: OsmBuilding[]; m
     area >= minArea && width >= minWidth && (area >= waterArea || !inWater(centre));
 
   const groups = new Map<string, { area: number; width: number; centre: Vec2 }>();
-  for (const b of data.buildings) {
+  for (const b of buildings) {
     if (!b.group) continue;
     const g = groups.get(b.group);
     // Width of a footprint ≈ 2·area / perimeter (exact for long thin strips).
@@ -89,7 +156,7 @@ function printableBuildings(data: OsmData, mpm: number): { osm: OsmBuilding[]; m
       g.width = Math.max(g.width, width);
     }
   }
-  const osm = data.buildings.filter((b) => {
+  const osm = buildings.filter((b) => {
     const g = b.group ? groups.get(b.group)! : null;
     if (g) return ok(g.area, g.width, g.centre);
     return ok(b.footprint, (2 * b.footprint) / (perimeter(b.outer) || 1), centroid(b.outer));

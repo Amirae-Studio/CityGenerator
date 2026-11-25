@@ -5,6 +5,7 @@ import { usePro, type Pro } from "@/lib/makerlab/usePro";
 
 /** Everything City Generator Pro adds — one list for the modal and the card. */
 export const PRO_FEATURES: { title: string; detail: string }[] = [
+  { title: "Edit buildings", detail: "Pick any buildings — resize them, colour them, drag them to a new spot" },
   { title: "8 more frame looks", detail: "Botanical, Ocean, Hive, Loft, Baroque, Art Deco, Linen, Starry" },
   { title: "5 more edge shapes", detail: "Bevel, Scoop, Ogee, Bead, Tiered" },
   { title: "6 more textures", detail: "Leaves, Waves, Honeycomb, Brick, Weave, Stars" },
@@ -40,7 +41,7 @@ export function ProBanner({ pro, onMore }: { pro: Pro; onMore?: () => void }) {
         {pro.price && <span className="ml-auto font-mono text-[12px] font-bold">{pro.price}</span>}
       </div>
       <p className="m-0 mt-1 text-[11.5px] leading-snug text-cream/60">
-        8 more looks, more edges and textures, your own SVG pattern and road tools.
+        Edit single buildings, 8 more looks, more edges and textures, your own SVG pattern and road tools.
       </p>
       <div className="mt-2.5 flex items-center gap-2">
         <BuyProAction pro={pro} className="flex-1" />

@@ -30,11 +30,15 @@ class NoReferrerSource implements Source {
   }
 
   async getBytes(offset: number, length: number, signal?: AbortSignal, etag?: string): Promise<RangeResponse> {
-    const res = await fetch(this.url, {
-      signal,
-      referrerPolicy: "no-referrer",
-      headers: { Range: `bytes=${offset}-${offset + length - 1}` },
-    });
+    const res = await withRetry(
+      () =>
+        fetch(this.url, {
+          signal,
+          referrerPolicy: "no-referrer",
+          headers: { Range: `bytes=${offset}-${offset + length - 1}` },
+        }),
+      signal
+    );
     let newEtag = res.headers.get("ETag") ?? undefined;
     if (newEtag?.startsWith("W/")) newEtag = undefined;
     if (res.status === 416 || (etag && newEtag && newEtag !== etag)) {
@@ -56,15 +60,36 @@ class NoReferrerSource implements Source {
   }
 }
 
+/** Busy or flaky answers worth another try (rate limit, gateway errors). */
+const RETRY_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+/** Retries a fetch twice (after 0.8 s, then 2 s) on a network error or a busy answer. */
+async function withRetry(go: () => Promise<Response>, signal?: AbortSignal): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await go();
+      if (!RETRY_STATUS.has(res.status) || attempt >= 2) return res;
+      res.body?.cancel();
+    } catch (err) {
+      if (signal?.aborted || attempt >= 2) throw err;
+    }
+    await new Promise((r) => setTimeout(r, attempt ? 2000 : 800));
+  }
+}
+
+async function getJson<T>(url: string): Promise<T> {
+  const res = await withRetry(() => fetch(url));
+  if (!res.ok) throw new Error(`Overture catalog ${res.status}`);
+  return (await res.json()) as T;
+}
+
 let archivePromise: Promise<PMTiles> | null = null;
 
 /** Releases are monthly and old ones get removed, so find the latest via STAC. */
 function buildingsArchive(): Promise<PMTiles> {
   archivePromise ??= (async () => {
-    const root = (await (await fetch(`${STAC}/catalog.json`)).json()) as { latest: string };
-    const cat = (await (await fetch(`${STAC}/${root.latest}/buildings/catalog.json`)).json()) as {
-      links: { rel: string; href: string }[];
-    };
+    const root = await getJson<{ latest: string }>(`${STAC}/catalog.json`);
+    const cat = await getJson<{ links: { rel: string; href: string }[] }>(`${STAC}/${root.latest}/buildings/catalog.json`);
     const href = cat.links.find((l) => l.rel === "pmtiles")?.href;
     if (!href) throw new Error("Overture release has no buildings PMTiles");
     return new PMTiles(new NoReferrerSource(href));

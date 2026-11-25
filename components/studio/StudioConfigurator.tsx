@@ -9,6 +9,10 @@ import {
   DEFAULT_LAYER_COLORS,
   fitScale,
   usableBed,
+  isDefaultEdit,
+  BUILDING_EDIT_DEFAULT,
+  type BuildingEdit,
+  type BuildingEdits,
   type CityControls,
 } from "@/lib/studio";
 import { useTheme } from "@/lib/theme";
@@ -16,10 +20,11 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { BackButton } from "@/components/ui/BackButton";
 import { StepPills } from "@/components/StepPills";
 import type { ModelFile } from "@/lib/types";
-import type { GizmoMode } from "./StudioScene";
+import type { BuildingEditor, GizmoMode } from "./StudioScene";
+import { BuildingsPanel } from "./BuildingsPanel";
 import { exportTo3MF, collectTransformedMeshes, type ExtraPlate } from "@/lib/3mfExporter";
 import Scrubber from "../ui/Scrubber";
-import { Building2, Eye, EyeOff, Frame, Palette, Road, Ruler, Shrub, SquareDimensions, TreePine } from "lucide-react";
+import { Building2, Eye, EyeOff, Frame, MousePointerClick, Palette, Road, Ruler, Shrub, TreePine } from "lucide-react";
 import { SizePanel, BED_MARGIN, type Dims, type SizeAxis } from "./SizePanel";
 import { FramePanel } from "./FramePanel";
 import { buildFrame, frameSTL, seatHeight, FRAME_DEFAULTS, type FrameBuild, type FrameOptions } from "@/lib/frame";
@@ -115,10 +120,9 @@ export function StudioConfigurator({
   // Download quota & export states
   const [exportingAs, setExportingAs] = useState<ExportFormat | null>(null);
   const [downloadNotice, setDownloadNotice] = useState<string | null>(null);
-  const [revitInfoModal, setRevitInfoModal] = useState(false);
 
   // Active dashboard tab state
-  type StudioTab = "size" | "frame" | "city" | "revit" | "colors";
+  type StudioTab = "size" | "frame" | "city" | "buildings" | "colors";
   const [activeTab, setActiveTab] = useState<StudioTab | null>("city");
 
   // Live "Manipulate city" controls
@@ -175,6 +179,76 @@ export function StudioConfigurator({
     void pro.unlock().then((ok) => ok && apply());
   };
 
+  /* Pro "Edit buildings": selection and per-building changes (see StudioScene). */
+  const [editBuildings, setEditBuildings] = useState(false);
+  const [selectedBuildings, setSelectedBuildings] = useState<string[]>([]);
+  const [buildingEdits, setBuildingEdits] = useState<BuildingEdits>({});
+  const [buildingNote, setBuildingNote] = useState<string | null>(null);
+
+  /** Turning the editor on is a Pro use: requestAccess every time. */
+  const setEditing = (on: boolean) => {
+    setBuildingNote(null);
+    if (!on) {
+      setEditBuildings(false);
+      setSelectedBuildings([]);
+      return;
+    }
+    if (!pro.owned && !pro.available) return setBuildingNote(PRO_ELSEWHERE);
+    void pro.unlock().then((ok) => {
+      if (!ok) return;
+      setMode(null); // the size gizmo would fight the building drag
+      setEditBuildings(true);
+    });
+  };
+
+  /** Merges a change into every selected building; a building back at default drops out. */
+  const patchSelected = useCallback(
+    (patch: Partial<BuildingEdit>) =>
+      setBuildingEdits((all) => {
+        const next = { ...all };
+        for (const id of selectedBuildings) {
+          const e = { ...BUILDING_EDIT_DEFAULT, ...all[id], ...patch };
+          if (isDefaultEdit(e)) delete next[id];
+          else next[id] = e;
+        }
+        return next;
+      }),
+    [selectedBuildings]
+  );
+
+  const buildingEditor = useMemo<BuildingEditor>(
+    () => ({
+      editing: editBuildings,
+      selected: selectedBuildings,
+      edits: buildingEdits,
+      onPick: (id, how) =>
+        setSelectedBuildings((sel) => {
+          if (how === "clear" || !id) return sel.length ? [] : sel;
+          if (how === "replace") return [id];
+          return sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id];
+        }),
+      onMove: (offsets) =>
+        setBuildingEdits((all) => {
+          const next = { ...all };
+          for (const [id, o] of Object.entries(offsets)) {
+            const e = { ...BUILDING_EDIT_DEFAULT, ...all[id], ...o };
+            if (isDefaultEdit(e)) delete next[id];
+            else next[id] = e;
+          }
+          return next;
+        }),
+    }),
+    [editBuildings, selectedBuildings, buildingEdits]
+  );
+
+  // Leaving the tab ends editing (the selection glow shouldn't reach the export cover).
+  useEffect(() => {
+    if (activeTab !== "buildings") {
+      setEditBuildings(false);
+      setSelectedBuildings([]);
+    }
+  }, [activeTab]);
+
   useEffect(() => {
     if (
       availableColorLayers.length > 0 &&
@@ -192,7 +266,11 @@ export function StudioConfigurator({
   useEffect(() => {
     const sameModel = loadedKey.current === modelKey;
     loadedKey.current = modelKey;
-    if (!sameModel) setCityCtl({ ...CITY_DEFAULTS, ...initialControls });
+    if (!sameModel) {
+      setCityCtl({ ...CITY_DEFAULTS, ...initialControls });
+      setBuildingEdits({});
+      setSelectedBuildings([]);
+    }
     // Swap straight to the rebuilt layers — no empty flash in between.
     setModelFiles(customFiles);
     setModelLoading(false);
@@ -233,7 +311,7 @@ export function StudioConfigurator({
   useEffect(() => {
     const t = setTimeout(() => measure(true), 60);
     return () => clearTimeout(t);
-  }, [cityCtl, modelFiles, measure]);
+  }, [cityCtl, buildingEdits, modelFiles, measure]);
 
   // Rebuild the frame when its options or the model's footprint change.
   // Rounded so a re-measure that moves nothing doesn't rebuild.
@@ -561,101 +639,6 @@ export function StudioConfigurator({
         )}
       </AnimatePresence>
 
-      {/* Revit Info Modal */}
-      <AnimatePresence>
-        {revitInfoModal && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm"
-            style={{ background: "rgba(0,0,0,0.75)" }}
-            onClick={(e) => { if (e.target === e.currentTarget) setRevitInfoModal(false); }}
-          >
-            <motion.div
-              initial={{ scale: 0.92, opacity: 0, y: 20 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.92, opacity: 0, y: 20 }}
-              transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
-              className="w-full max-w-[600px] max-h-[88vh] overflow-y-auto rounded-2xl border border-cream/[0.12] bg-panel shadow-[var(--panel-shadow)]"
-            >
-              {/* Modal Header */}
-              <div className="sticky top-0 z-10 flex items-center justify-between border-b border-cream/[0.09] px-6 py-4 bg-panel">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-xl" style={{ background: "var(--accent)" }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                      <rect x="2" y="14" width="20" height="6" rx="1.5" stroke="white" strokeWidth="1.8"/>
-                      <rect x="5" y="4" width="14" height="10" rx="1" stroke="white" strokeWidth="1.8"/>
-                    </svg>
-                  </div>
-                  <div>
-                    <div className="font-mono text-[9px] font-bold uppercase tracking-[0.3em]" style={{ color: "var(--accent)" }}>Learn More</div>
-                    <h2 className="m-0 font-display text-[20px] font-medium text-cream">What is the Revit Base Frame?</h2>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setRevitInfoModal(false)}
-                  className="flex h-8 w-8 items-center justify-center rounded-xl text-cream/40 transition-colors hover:bg-cream/10 hover:text-cream text-[16px]"
-                >
-                  ✕
-                </button>
-              </div>
-
-              {/* Modal Body */}
-              <div className="flex flex-col gap-6 p-6">
-
-                {/* Hero Image 1 */}
-                <div className="overflow-hidden rounded-xl border border-cream/[0.12]">
-                  <img
-                    src="./revit.jpg"
-                    alt="Revit base frame explainer — city model sitting on a rigid base plate"
-                    className="w-full object-cover"
-                    style={{ maxHeight: "260px" }}
-                  />
-                </div>
-
-                {/* Section 1 */}
-                <div className="flex flex-col gap-2">
-                  <div className="font-mono text-[10px] font-bold uppercase tracking-[0.24em]" style={{ color: "var(--accent)" }}>What it is</div>
-                  <p className="m-0 text-[13.5px] leading-[1.7] text-cream/80">
-                    A flat, rigid rectangular plate generated directly beneath your city model. It serves as a structural mounting board and provides a seamless contact layer, making it much easier to securely anchor and attach your exported Revit geometry to the base.
-                  </p>
-                </div>
-
-                
-
-                
-
-                {/* Section 2 — How to use */}
-                <div className="flex flex-col gap-3 rounded-xl border border-cream/[0.12] bg-cream/[0.03] p-4">
-                  <div className="font-mono text-[10px] font-bold uppercase tracking-[0.24em]" style={{ color: "var(--accent)" }}>How to use it</div>
-                  <ol className="m-0 flex flex-col gap-2 pl-0 list-none">
-                    {[
-                      { step: "01", text: "Toggle on \"Revit base frame layer\" in the controls above." },
-                      { step: "02", text: "Adjust the Frame Height to how thick you want the base (in mm)." },
-                      { step: "03", text: "Use Uniform W+D to lock width and depth, or control them independently." },
-                      { step: "04", text: "Download your model — the base frame is merged automatically." },
-                    ].map((s) => (
-                      <li key={s.step} className="flex items-start gap-3">
-                        <span className="mt-[1px] shrink-0 font-mono text-[10px] font-bold" style={{ color: "var(--accent)" }}>{s.step}</span>
-                        <span className="text-[12.5px] leading-[1.6] text-cream/80">{s.text}</span>
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-
-                {/* Close Button */}
-                <button
-                  type="button"
-                  onClick={() => setRevitInfoModal(false)}
-                  className="w-full rounded-full btn-primary py-3 text-[13px] transition-transform hover:scale-[1.02]"
-                >
-                  Got it — back to settings
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
       {/* Header */}
       <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-cream/[0.08] bg-deep px-4 md:px-6">
         {/* Shrinks (and clips) before the action buttons do, so the title
@@ -739,6 +722,7 @@ export function StudioConfigurator({
             loading={modelLoading}
             files={modelFiles}
             cityControls={cityCtl}
+            buildings={buildingEditor}
             onTarget={handleTarget}
             onTransform={syncFromMesh}
             frame={
@@ -756,7 +740,12 @@ export function StudioConfigurator({
           </Suspense>
 
           <div className="pointer-events-none absolute bottom-4 left-1/2 hidden -translate-x-1/2 rounded-full border border-cream/[0.12] bg-deep/60 px-[13px] py-[7px] font-mono text-[10px] uppercase tracking-[0.16em] text-cream/45 backdrop-blur-[6px] md:block">
-            {mode ? "Drag the gizmo · " : "Drag to orbit · "}scroll to zoom · right-drag to pan
+            {editBuildings
+              ? "Click a building · Shift-click for more · drag to move · "
+              : mode
+                ? "Drag the gizmo · "
+                : "Drag to orbit · "}
+            scroll to zoom · right-drag to pan
           </div>
         </div>
 
@@ -768,7 +757,7 @@ export function StudioConfigurator({
               { id: "city" as const, label: "Manipulate City", icon: <Building2  size={18} /> },
               
               
-              { id: "revit" as const, label: "Revit Base Frame", icon: <SquareDimensions  size={18} /> },
+              { id: "buildings" as const, label: "Edit Buildings · Pro", icon: <MousePointerClick size={18} /> },
               ...(type !== "building" ? [{ id: "colors" as const, label: "Filament Colors", icon: <Palette  size={18} /> }] : []),
               { id: "size" as const, label: "Size & Printer", icon: <Ruler size={18} /> },
               { id: "frame" as const, label: "Frame", icon: <Frame size={18} /> },
@@ -831,14 +820,14 @@ export function StudioConfigurator({
                       {activeTab === "size" && "04"}
                       {activeTab === "frame" && "05"}
                       {activeTab === "city" && "01"}
-                      {activeTab === "revit" && "02"}
+                      {activeTab === "buildings" && "02"}
                       {activeTab === "colors" && "03"}
                     </span>
                     <h3 className="m-0 font-display text-[17px] font-medium capitalize text-cream">
                       {activeTab === "size" && "Size & Printer"}
                       {activeTab === "frame" && "Frame"}
                       {activeTab === "city" && "Manipulate City"}
-                      {activeTab === "revit" && "Revit Base Frame"}
+                      {activeTab === "buildings" && "Edit Buildings"}
                       {activeTab === "colors" && "Filament Colors"}
                     </h3>
                   </div>
@@ -1093,92 +1082,26 @@ export function StudioConfigurator({
                   </div>
                 )}
 
-                {/* Tab 4: Revit Base Frame */}
-                {activeTab === "revit" && (
-                  <div className="flex flex-col gap-4">
-                    {/* What is Revit? Info Banner */}
-                    <div className="rounded-xl border border-cream/[0.14] bg-cream/[0.03] p-3.5 flex flex-col gap-2">
-                      <div className="flex items-start gap-2.5">
-                        <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md" style={{ background: "var(--accent)", opacity: 0.9 }}>
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-                            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z" fill="white"/>
-                          </svg>
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          <span className="font-mono text-[10px] font-bold uppercase tracking-wider text-cream/80">What is the Revit Frame?</span>
-                          <p className="m-0 font-mono text-[9.5px] leading-[1.65] text-cream/50">
-                            A rigid base plate printed beneath your city model — makes it wall-mountable like a picture frame.
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setRevitInfoModal(true)}
-                        className="mt-1 w-full rounded-lg border border-[var(--accent)]/40 py-2 font-mono text-[10px] font-bold uppercase tracking-wider text-[var(--accent)] transition-all duration-200 hover:bg-[var(--accent)]/10 flex items-center justify-center gap-1.5"
-                      >
-                        
-                        Click here to know more about Revit
-                      </button>
-                    </div>
-
-                    <SegmentedToggle
-                      label="Revit base frame layer"
-                      checked={cityCtl.enableRevit}
-                      onCheckedChange={(v) => setCtl("enableRevit", v)}
-                    />
-                    {cityCtl.enableRevit && (
-                      <div className="flex flex-col gap-3.5 pl-3.5 pt-1">
-                        <Scrubber
-                          label={`Frame height (${(cityCtl.revitHeight / 100).toFixed(1)} cm)`}
-                          value={cityCtl.revitHeight}
-                          min={10}
-                          max={200}
-                          step={1}
-                          decimals={0}
-                          onValueChange={(v) => setCtl("revitHeight", v)}
-                        />
-                        
-                        <SegmentedToggle
-                          label="Uniform W+D"
-                          checked={cityCtl.revitUniformScale}
-                          onCheckedChange={(v) => setCtl("revitUniformScale", v)}
-                        />
-
-                        {cityCtl.revitUniformScale ? (
-                          <Scrubber
-                            label="Frame size (W+D)"
-                            value={cityCtl.revitUniform}
-                            min={95}
-                            max={105}
-                            step={1}
-                            decimals={0}
-                            onValueChange={(v) => setCtl("revitUniform", v)}
-                          />
-                        ) : (
-                          <>
-                            <Scrubber
-                              label="Frame width"
-                              value={cityCtl.revitWidth}
-                              min={95}
-                              max={105}
-                              step={1}
-                              decimals={0}
-                              onValueChange={(v) => setCtl("revitWidth", v)}
-                            />
-                            <Scrubber
-                              label="Frame breadth"
-                              value={cityCtl.revitBreadth}
-                              min={95}
-                              max={105}
-                              step={1}
-                              decimals={0}
-                              onValueChange={(v) => setCtl("revitBreadth", v)}
-                            />
-                          </>
-                        )}
-                      </div>
-                    )}
-                  </div>
+                {/* Tab 2: Edit Buildings (Pro) */}
+                {activeTab === "buildings" && (
+                  <BuildingsPanel
+                    pro={pro}
+                    note={buildingNote}
+                    editing={editBuildings}
+                    onEditing={setEditing}
+                    selected={selectedBuildings}
+                    edits={buildingEdits}
+                    onPatch={patchSelected}
+                    onClearSelection={() => setSelectedBuildings([])}
+                    onResetSelected={() =>
+                      setBuildingEdits((all) => {
+                        const next = { ...all };
+                        for (const id of selectedBuildings) delete next[id];
+                        return next;
+                      })
+                    }
+                    onResetAll={() => setBuildingEdits({})}
+                  />
                 )}
 
                 {/* Tab 5: Filament Colors */}
