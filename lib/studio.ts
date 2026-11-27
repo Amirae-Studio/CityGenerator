@@ -219,11 +219,13 @@ export type BuildingEdit = {
   /** Move across the ground, in the model's own units (the building follows the terrain) */
   dx: number;
   dz: number;
+  /** Taken out of the model (hidden in the view and left out of the download) */
+  removed: boolean;
 };
 
-export const BUILDING_EDIT_DEFAULT: BuildingEdit = { size: 100, height: 100, color: null, dx: 0, dz: 0 };
+export const BUILDING_EDIT_DEFAULT: BuildingEdit = { size: 100, height: 100, color: null, dx: 0, dz: 0, removed: false };
 
 export type BuildingEdits = Record<string, BuildingEdit>;
 
 export const isDefaultEdit = (e: BuildingEdit) =>
-  e.size === 100 && e.height === 100 && e.color === null && e.dx === 0 && e.dz === 0;
+  e.size === 100 && e.height === 100 && e.color === null && e.dx === 0 && e.dz === 0 && !e.removed;

@@ -1,4 +1,4 @@
-import { Crown, Move, MousePointerClick, RotateCcw } from "lucide-react";
+import { Crown, Move, MousePointerClick, RotateCcw, Trash2 } from "lucide-react";
 import { FILAMENT_LINES, BUILDING_EDIT_DEFAULT, type BuildingEdit, type BuildingEdits } from "@/lib/studio";
 import type { Pro } from "@/lib/makerlab/usePro";
 import { PRO_ELSEWHERE } from "@/components/ProUpsell";
@@ -25,6 +25,8 @@ export function BuildingsPanel({
   onClearSelection,
   onResetSelected,
   onResetAll,
+  onRemove,
+  onRestoreRemoved,
 }: {
   pro: Pro;
   note: string | null;
@@ -38,6 +40,10 @@ export function BuildingsPanel({
   onClearSelection: () => void;
   onResetSelected: () => void;
   onResetAll: () => void;
+  /** Takes the selected buildings out of the model. */
+  onRemove: () => void;
+  /** Brings every removed building back. */
+  onRestoreRemoved: () => void;
 }) {
   if (!pro.owned) return <ProPitch pro={pro} note={note} onTry={() => onEditing(true)} />;
 
@@ -45,6 +51,7 @@ export function BuildingsPanel({
   const editedCount = Object.keys(edits).length;
   const none = selected.length === 0;
   const selectedEdited = selected.some((id) => edits[id]);
+  const removedCount = Object.values(edits).filter((e) => e.removed).length;
 
   return (
     <div className="flex flex-col gap-5">
@@ -129,7 +136,30 @@ export function BuildingsPanel({
             Back to original spot
           </button>
         </Step>
+
+        <Step n={5} title="Remove" hint={<kbd className="rounded border border-cream/20 px-1 font-mono text-[9.5px]">Delete</kbd>}>
+          <button
+            type="button"
+            onClick={onRemove}
+            className="flex items-center justify-center gap-1.5 rounded-lg border border-[#d9534f]/50 py-2 text-[12.5px] font-medium text-[#d9534f] transition-colors hover:bg-[#d9534f]/10"
+          >
+            <Trash2 size={13} />
+            Remove {selected.length > 1 ? `${selected.length} buildings` : "building"}
+          </button>
+          <p className="m-0 text-[11px] leading-snug text-cream/45">Left out of the view and the download. You can bring it back below.</p>
+        </Step>
       </div>
+
+      {removedCount > 0 && (
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-cream/[0.12] bg-cream/[0.03] px-3 py-2 text-[11.5px] text-cream/65">
+          <span>
+            {removedCount} building{removedCount > 1 ? "s" : ""} removed
+          </span>
+          <button type="button" onClick={onRestoreRemoved} className="font-medium text-[var(--accent-text)] underline underline-offset-2">
+            Bring back
+          </button>
+        </div>
+      )}
 
       <div className="flex items-center gap-2 border-t border-cream/[0.09] pt-3.5">
         <button
@@ -176,6 +206,7 @@ function ProPitch({ pro, note, onTry }: { pro: Pro; note: string | null; onTry: 
             <li>• Make it bigger, smaller or taller</li>
             <li>• Give it its own filament colour</li>
             <li>• Drag it to a new spot on the map</li>
+            <li>• Remove the ones you don't want</li>
           </ul>
           {pro.available ? (
             <button

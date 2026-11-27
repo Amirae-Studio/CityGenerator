@@ -11,6 +11,7 @@
 // the nameplate displace the front face's vertices in Z.
 
 import * as THREE from "three";
+import { distToPoly, fitOutline, isBoxOutline, offsetOutline, pointInPoly, shapedRings, type Pt, type ShapedRings } from "./frameShape";
 
 export type FrameProfile =
   | "flat"
@@ -182,7 +183,16 @@ const LABEL_RAISE = 0.8;
 /** Narrowest rail that still has room for the keyhole and its walls. */
 export const MIN_HANGER_BORDER = 15;
 
-export type FrameSize = { w: number; d: number; h: number; opening: { w: number; d: number } };
+export type FrameSize = {
+  w: number;
+  d: number;
+  h: number;
+  opening: { w: number; d: number };
+  /** Open back: a centred rectangle that fits inside the ledge (for the slicer's prime tower). */
+  window?: { w: number; d: number };
+  /** The frame follows the model's outline instead of a rectangle. */
+  shaped?: boolean;
+};
 
 export function frameSize(tile: { w: number; d: number }, o: FrameOptions): FrameSize {
   const ow = tile.w + o.clearance * 2;
@@ -570,7 +580,19 @@ function ring(hw: number, hd: number, rad: number, L: Layout): THREE.Vector2[] {
 /* ── Nameplate ────────────────────────────────────────────────────────── */
 
 /** Letter outlines in frame millimetres, plus the box they occupy. */
-type Plate = { cx: number; cy: number; w: number; h: number; shapes: THREE.Shape[] };
+/** Letters' box: centre, size, and turn (radians) — a shaped rail's letters follow its slope. */
+type Plate = { cx: number; cy: number; w: number; h: number; rot: number; shapes: THREE.Shape[] };
+
+/** A point in the plate's own frame (x along the letters, y up them). */
+const plateLocal = (p: Plate, x: number, y: number) => {
+  const dx = x - p.cx, dy = y - p.cy, c = Math.cos(p.rot), s = Math.sin(p.rot);
+  return [dx * c + dy * s, -dx * s + dy * c] as const;
+};
+/** The plate's own frame back to frame millimetres. */
+const plateWorld = (p: Plate, lx: number, ly: number) => {
+  const c = Math.cos(p.rot), s = Math.sin(p.rot);
+  return [p.cx + lx * c - ly * s, p.cy + lx * s + ly * c] as const;
+};
 
 /** Usable band of the bottom rail for letters: [inset from outer edge, width]. */
 function labelBand(o: FrameOptions): [number, number] {
@@ -613,7 +635,7 @@ export const autoLabelSize = (o: FrameOptions) => Math.max(2, labelBand(o)[1] * 
  * (marching squares at 50 % coverage), so the letters become a clean solid
  * that prints in its own colour.
  */
-function nameplate(o: FrameOptions, railY: number, maxW: number): Plate | null {
+function nameplate(o: FrameOptions, railY: number, maxW: number, cx = 0, rot = 0): Plate | null {
   const text = o.label.trim();
   if (typeof document === "undefined" || !text) return null;
   const PX = 14; // canvas pixels per mm
@@ -646,7 +668,11 @@ function nameplate(o: FrameOptions, railY: number, maxW: number): Plate | null {
 
   const wMm = W / PX, hMm = H / PX;
   // Pixel centre (i + 0.5, j + 0.5) → frame mm; canvas y runs down, frame y up.
-  const toMm = (x: number, y: number) => new THREE.Vector2((x + 0.5) / PX - wMm / 2, railY + hMm / 2 - (y + 0.5) / PX);
+  const cr = Math.cos(rot), sr = Math.sin(rot);
+  const toMm = (x: number, y: number) => {
+    const lx = (x + 0.5) / PX - wMm / 2, ly = hMm / 2 - (y + 0.5) / PX;
+    return new THREE.Vector2(cx + lx * cr - ly * sr, railY + lx * sr + ly * cr);
+  };
 
   const loops = traceContours(val, W, H).map((l) => simplifyLoop(l.map(([x, y]) => toMm(x, y)), 0.01));
   // Specks and hairline slivers (gaps a pixel wide) are far below a nozzle
@@ -659,7 +685,7 @@ function nameplate(o: FrameOptions, railY: number, maxW: number): Plate | null {
   };
   const shapes = loopsToShapes(loops.filter(printable));
   if (!shapes.length) return null;
-  return { cx: 0, cy: railY, w: wMm, h: hMm, shapes };
+  return { cx, cy: railY, w: wMm, h: hMm, rot, shapes };
 }
 
 /** Closed iso-0.5 contours of a sampled field, in pixel coordinates. */
@@ -782,13 +808,25 @@ export type FrameBuild = {
   size: FrameSize;
 };
 
-export async function buildFrame(tile: { w: number; d: number }, o: FrameOptions): Promise<FrameBuild> {
-  const size = frameSize(tile, o);
+/**
+ * @param outline The model's outline (any scale; x right, y up as seen from the
+ *   front). A frame for a round, heart, star… model follows it; a rectangle, or
+ *   no outline, gives the classic rectangular frame.
+ */
+export async function buildFrame(tile: { w: number; d: number }, o: FrameOptions, outline?: Pt[] | null): Promise<FrameBuild> {
+  let size = frameSize(tile, o);
   const hw = size.w / 2, hd = size.d / 2;
   const B = o.border;
   const r = Math.min(Math.max(0, o.radius), B);
   const detailed = o.texture !== "smooth";
   const step = detailed ? 0.4 : 2;
+
+  // Shaped frame: rings are offsets of the model's outline (lib/frameShape.ts).
+  let S: ShapedRings | null = null;
+  if (outline && outline.length >= 3 && !isBoxOutline(outline)) {
+    const opening = offsetOutline(fitOutline(outline, tile.w, tile.d), o.clearance);
+    S = opening ? shapedRings(opening, B, step) : null;
+  }
 
   // Cross-section, as one closed loop for an open back, or open with two caps
   // (pocket floor, back panel) for a solid back.
@@ -800,7 +838,10 @@ export async function buildFrame(tile: { w: number; d: number }, o: FrameOptions
   if (solid) {
     loop = [{ u: B, z: T }, { u: B, z: rimZ }, ...front.slice().reverse()];
   } else {
-    const lip = Math.min(o.lip, Math.min(size.opening.w, size.opening.d) / 2 - 5);
+    let lip = Math.min(o.lip, Math.min(size.opening.w, size.opening.d) / 2 - 5);
+    // A shaped opening narrows faster (star points): shrink the ledge until it stays one piece.
+    while (S && lip > 2 && !S.ring(B + lip)) lip /= 2;
+    if (S && !S.ring(B + lip)) S = null;
     loop = [...front, { u: B, z: T }, { u: B + lip, z: T }, { u: B + lip, z: 0 }];
   }
   // A repeated point would make a zero-width strip of slivers.
@@ -827,7 +868,53 @@ export async function buildFrame(tile: { w: number; d: number }, o: FrameOptions
   // Letters sit centred on the flat band of the bottom rail.
   const [bandU, bandW] = labelBand(o);
   if (o.label.trim()) await ensureFont(o.labelFont);
-  const plate = nameplate(o, -(hd - bandU - bandW / 2), Math.min(size.opening.w * 0.75, 2 * hw - 2 * B));
+  let plate: Plate | null;
+  /** Outer edge's height under the letters' centre (the rail's inset is measured from it). */
+  let bottomEdgeY = -hd;
+  if (S) {
+    // Somewhere on the lower half of the rail, the letters turned to run along
+    // it: the spot with the most room wins (level text gets a small bonus), so a
+    // round frame gets them straight along the bottom and a heart along its side.
+    const outerR = S.ring(bandU)!, innerR = S.ring(bandU + bandW)!;
+    bottomEdgeY = S.ring(0)![S.down].y;
+    const cap = Math.min(o.labelSize > 0 ? o.labelSize : autoLabelSize(o), maxLabelSize(o));
+    const n = outerR.length;
+    let best: { w: number; score: number; cx: number; cy: number; rot: number } | null = null;
+    for (let k = 0; k < n; k += Math.max(1, Math.floor(n / 240))) {
+      const a = S.angles[k];
+      if (a < Math.PI + 0.3 || a > 2 * Math.PI - 0.3) continue; // lower half only
+      const cx = (outerR[k].x + innerR[k].x) / 2, cy = (outerR[k].y + innerR[k].y) / 2;
+      const kp = (k + 2) % n, km = (k - 2 + n) % n;
+      const tx = outerR[kp].x - outerR[km].x, ty = outerR[kp].y - outerR[km].y;
+      let rot = Math.atan2(ty, tx);
+      if (rot > Math.PI / 2) rot -= Math.PI;
+      if (rot < -Math.PI / 2) rot += Math.PI;
+      const band = Math.hypot(outerR[k].x - innerR[k].x, outerR[k].y - innerR[k].y);
+      const h = Math.min(band, (cap / 0.72) * 1.35 + 0.6);
+      const c = Math.cos(rot), sn = Math.sin(rot);
+      const fits = (w: number) => {
+        for (let i = 0; i <= 12; i++) {
+          const lx = -w / 2 + (w * i) / 12;
+          for (const ly of [-h / 2, 0, h / 2]) {
+            const x = cx + lx * c - ly * sn, y = cy + lx * sn + ly * c;
+            if (!pointInPoly(x, y, outerR) || pointInPoly(x, y, innerR)) return false;
+          }
+        }
+        return true;
+      };
+      let lo = 0, hi = Math.max(size.opening.w, size.opening.d);
+      for (let it = 0; it < 16; it++) {
+        const m = (lo + hi) / 2;
+        if (fits(m)) lo = m;
+        else hi = m;
+      }
+      const score = lo * (1 - 0.25 * Math.abs(rot) / (Math.PI / 2));
+      if (!best || score > best.score) best = { w: lo, score, cx, cy, rot };
+    }
+    plate = best && best.w > 4 ? nameplate(o, best.cy, best.w, best.cx, best.rot) : null;
+  } else {
+    plate = nameplate(o, -(hd - bandU - bandW / 2), Math.min(size.opening.w * 0.75, 2 * hw - 2 * B));
+  }
   // The user's own pattern; a missing or unreadable one leaves the face smooth.
   const custom = o.texture === "custom" && o.pattern ? await loadPattern(o.pattern).catch(() => null) : null;
   const amp = o.texture === "smooth" || (o.texture === "custom" && !custom) ? 0 : Math.max(0, o.textureDepth);
@@ -840,11 +927,12 @@ export async function buildFrame(tile: { w: number; d: number }, o: FrameOptions
   };
 
   loop.forEach((p, li) => {
-    const pts = ring(hw - p.u, hd - p.u, Math.max(0, r - p.u), L);
+    const pts = S ? S.ring(p.u)! : ring(hw - p.u, hd - p.u, Math.max(0, r - p.u), L);
     const fade = p.face ? smooth(0, 1.2, faceDist.get(li) ?? 0) : 0;
     const idx: number[] = [];
     let last: THREE.Vector2 | null = null;
-    for (const q of pts) {
+    for (let k = 0; k < pts.length; k++) {
+      const q = pts[k];
       // Square corners collapse a corner's samples onto one point: share it,
       // so no zero-area triangles reach the slicer.
       if (last && last.distanceToSquared(q) < 1e-12) {
@@ -854,14 +942,22 @@ export async function buildFrame(tile: { w: number; d: number }, o: FrameOptions
       last = q;
       let z = p.z;
       if (p.face && fade > 0) {
-        const dx = hw - Math.abs(q.x), dy = hd - Math.abs(q.y);
-        const onRail = dy < dx; // top/bottom rail vs left/right stile (mitred)
-        const along = onRail ? q.x : q.y;
-        const across = onRail ? dy : dx;
+        let along: number, across: number;
+        if (S) {
+          // Around a shaped rail: distance along the edge, and inset from it.
+          along = S.angles[k] * S.radius;
+          across = p.u;
+        } else {
+          const dx = hw - Math.abs(q.x), dy = hd - Math.abs(q.y);
+          const onRail = dy < dx; // top/bottom rail vs left/right stile (mitred)
+          along = onRail ? q.x : q.y;
+          across = onRail ? dy : dx;
+        }
         let a = amp;
         if (plate) {
-          const inX = Math.abs(q.x - plate.cx) - plate.w / 2;
-          const inY = Math.abs(q.y - plate.cy) - plate.h / 2;
+          const [lx, ly] = plateLocal(plate, q.x, q.y);
+          const inX = Math.abs(lx) - plate.w / 2;
+          const inY = Math.abs(ly) - plate.h / 2;
           // A smooth band under the letters keeps them readable on any texture.
           a *= smooth(0, 1.5, Math.max(inX, inY));
         }
@@ -915,8 +1011,20 @@ export async function buildFrame(tile: { w: number; d: number }, o: FrameOptions
 
   const backRing = solid ? rings[rings.length - 1] : rings[0];
   const backHoles: number[][] = solid ? [] : [rings[rings.length - 1]];
-  const hanger = o.hanger && B >= MIN_HANGER_BORDER && o.depth >= 10;
-  if (hanger) backHoles.push(keyhole(hd - B / 2, o, vert, tri));
+  let hanger = o.hanger && B >= MIN_HANGER_BORDER && o.depth >= 10;
+  let hangX = 0, hangY = hd - B / 2;
+  if (hanger && S) {
+    // Top of a shaped rail, straight up from the centre — if the keyhole's
+    // pocket fits there (a star's thin point may not have room).
+    const out0 = S.ring(0)!, inB = S.ring(B)!;
+    hangX = S.centre[0];
+    hangY = (out0[S.up].y + inB[S.up].y) / 2;
+    for (const [x, y] of [[-5.25, -7], [5.25, -7], [5.25, 7], [-5.25, 7], [0, -7], [0, 7], [-5.25, 0], [5.25, 0]]) {
+      const px = hangX + x, py = hangY + y;
+      if (!pointInPoly(px, py, out0) || pointInPoly(px, py, inB)) hanger = false;
+    }
+  }
+  if (hanger) backHoles.push(keyhole(hangX, hangY, o, vert, tri));
   cap(backRing, backHoles, false);
   if (solid) cap(rings[0], [], true); // pocket floor
 
@@ -947,11 +1055,24 @@ export async function buildFrame(tile: { w: number; d: number }, o: FrameOptions
     // its inset from the outer edge is hd + y. (hd - y measured from the far
     // side and always landed on the pocket rim — fine for profiles that are
     // full height there, but it buried the letters on Stepped and Cove.)
-    const u0 = hd + (plate.cy - plate.h / 2), u1 = hd + (plate.cy + plate.h / 2);
-    for (let k = 0; k <= 24; k++) {
-      const z = faceZ(Math.max(0, Math.min(B, u0 + ((u1 - u0) * k) / 24)));
-      plateLo = Math.min(plateLo, z);
-      plateHi = Math.max(plateHi, z);
+    if (S) {
+      // A curved rail: the inset changes along the letters, so sample them all.
+      const out0 = S.ring(0)!;
+      for (let i = 0; i <= 16; i++) {
+        for (let j = 0; j <= 6; j++) {
+          const [x, y] = plateWorld(plate, -plate.w / 2 + (plate.w * i) / 16, -plate.h / 2 + (plate.h * j) / 6);
+          const z = faceZ(Math.max(0, Math.min(B, distToPoly(x, y, out0))));
+          plateLo = Math.min(plateLo, z);
+          plateHi = Math.max(plateHi, z);
+        }
+      }
+    } else {
+      const u0 = plate.cy - plate.h / 2 - bottomEdgeY, u1 = plate.cy + plate.h / 2 - bottomEdgeY;
+      for (let k = 0; k <= 24; k++) {
+        const z = faceZ(Math.max(0, Math.min(B, u0 + ((u1 - u0) * k) / 24)));
+        plateLo = Math.min(plateLo, z);
+        plateHi = Math.max(plateHi, z);
+      }
     }
     const base = plateLo - 0.6;
     const ext = new THREE.ExtrudeGeometry(plate.shapes, {
@@ -964,6 +1085,8 @@ export async function buildFrame(tile: { w: number; d: number }, o: FrameOptions
     ext.computeVertexNormals();
     text = ext;
   }
+  if (S) size = shapedSize(S, loop[loop.length - 1].u, o, B);
+  else if (o.back === "open") size = { ...size, window: { w: size.opening.w - o.lip * 2, d: size.opening.d - o.lip * 2 } };
   return { geometry: g, text, size };
 
   /**
@@ -974,6 +1097,7 @@ export async function buildFrame(tile: { w: number; d: number }, o: FrameOptions
    * for the back face to leave open.
    */
   function keyhole(
+    cx: number,
     railY: number,
     opt: FrameOptions,
     vtx: (x: number, y: number, z: number) => number,
@@ -989,18 +1113,18 @@ export async function buildFrame(tile: { w: number; d: number }, o: FrameOptions
     // Entry circle, the long way round from the slot's right side to its left.
     for (let k = 0; k <= 40; k++) {
       const a = alpha - (k / 40) * (Math.PI + 2 * alpha);
-      outline.push([R * Math.cos(a), yc + R * Math.sin(a)]);
+      outline.push([cx + R * Math.cos(a), yc + R * Math.sin(a)]);
     }
     // Up the slot and round its top.
     for (let k = 0; k <= 12; k++) {
       const a = Math.PI - (k / 12) * Math.PI;
-      outline.push([w * Math.cos(a), ys + w * Math.sin(a)]);
+      outline.push([cx + w * Math.cos(a), ys + w * Math.sin(a)]);
     }
     const pocket: [number, number][] = [
-      [-4.25, railY - 6],
-      [4.25, railY - 6],
-      [4.25, railY + 6],
-      [-4.25, railY + 6],
+      [cx - 4.25, railY - 6],
+      [cx + 4.25, railY - 6],
+      [cx + 4.25, railY + 6],
+      [cx - 4.25, railY + 6],
     ];
     const ccw = (l: [number, number][]) => {
       let a = 0;
@@ -1029,6 +1153,45 @@ export async function buildFrame(tile: { w: number; d: number }, o: FrameOptions
     cap(P2, [], false); // pocket ceiling
     return K0;
   }
+}
+
+/** Outer size, opening and ledge window of a shaped frame, from its rings. */
+function shapedSize(S: ShapedRings, innerU: number, o: FrameOptions, B: number): FrameSize {
+  const box = (l: THREE.Vector2[]) => {
+    const b = new THREE.Box2().setFromPoints(l);
+    return { w: b.max.x - b.min.x, d: b.max.y - b.min.y };
+  };
+  const outer = box(S.ring(0)!);
+  const opening = box(S.ring(B)!);
+  let window: FrameSize["window"];
+  if (o.back === "open") {
+    // Largest rectangle (opening's proportions) centred on the frame, inside the ledge.
+    const ledge = S.ring(innerU)!;
+    const cx = 0, cy = 0;
+    const fits = (f: number) => {
+      const w = opening.w * f, d = opening.d * f;
+      for (let i = 0; i <= 8; i++) {
+        const t = i / 8;
+        for (const [x, y] of [
+          [cx - w / 2 + w * t, cy - d / 2],
+          [cx - w / 2 + w * t, cy + d / 2],
+          [cx - w / 2, cy - d / 2 + d * t],
+          [cx + w / 2, cy - d / 2 + d * t],
+        ]) {
+          if (!pointInPoly(x, y, ledge)) return false;
+        }
+      }
+      return true;
+    };
+    let lo = 0, hi = 1;
+    for (let k = 0; k < 14; k++) {
+      const m = (lo + hi) / 2;
+      if (fits(m)) lo = m;
+      else hi = m;
+    }
+    window = { w: opening.w * lo, d: opening.d * lo };
+  }
+  return { w: outer.w, d: outer.d, h: o.depth, opening, window, shaped: true };
 }
 
 function signedVolume(g: THREE.BufferGeometry) {

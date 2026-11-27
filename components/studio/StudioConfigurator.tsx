@@ -81,6 +81,7 @@ export function StudioConfigurator({
   initialControls,
   onBack,
   terrainControl,
+  outline,
 }: {
   type?: "explore" | "building";
   city: { slug: string; name: string };
@@ -93,6 +94,8 @@ export function StudioConfigurator({
   /** Explore World: smooth or flat ground. The parent
    *  rebuilds the model and passes new customFiles; controls are kept. */
   terrainControl?: TerrainChoice & { busy: boolean; onChange: (t: TerrainChoice) => void };
+  /** The model's footprint outline (metres, x east, y north): the frame takes its shape. */
+  outline?: [number, number][];
 }) {
   const meshRef = useRef<THREE.Object3D | null>(null);
   const ml = useMakerLab();
@@ -108,6 +111,8 @@ export function StudioConfigurator({
   const [moved, setMoved] = useState(false);
   // Where the model sits in the scene, so the frame can wrap around it.
   const [seat, setSeat] = useState<{ x: number; z: number; y: number } | null>(null);
+  /** The model's turn on the bed (radians), so a shaped frame turns with it. */
+  const [turn, setTurn] = useState(0);
 
   // Picture frame for the model
   const [frameOn, setFrameOn] = useState(false);
@@ -216,6 +221,42 @@ export function StudioConfigurator({
     [selectedBuildings]
   );
 
+  /** Takes the selected buildings out of the model; they can be brought back from the panel. */
+  const removeSelected = useCallback(() => {
+    if (!selectedBuildings.length) return;
+    patchSelected({ removed: true });
+    setSelectedBuildings([]);
+  }, [patchSelected, selectedBuildings]);
+
+  const restoreRemoved = useCallback(
+    () =>
+      setBuildingEdits((all) => {
+        const next = { ...all };
+        for (const [id, e] of Object.entries(all)) {
+          if (!e.removed) continue;
+          const back = { ...e, removed: false };
+          if (isDefaultEdit(back)) delete next[id];
+          else next[id] = back;
+        }
+        return next;
+      }),
+    []
+  );
+
+  // Delete / Backspace removes the selection while editing (not while typing in a field).
+  useEffect(() => {
+    if (!editBuildings) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      e.preventDefault();
+      removeSelected();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editBuildings, removeSelected]);
+
   const buildingEditor = useMemo<BuildingEditor>(
     () => ({
       editing: editBuildings,
@@ -289,6 +330,7 @@ export function StudioConfigurator({
     setDims({ w: size.x, d: size.z, h: size.y });
     const c = box.getCenter(new THREE.Vector3());
     setSeat({ x: c.x, z: c.z, y: box.min.y });
+    setTurn(Math.round(mesh.rotation.y * 1000) / 1000);
     const atRest =
       mesh.scale.equals(new THREE.Vector3(1, 1, 1)) &&
       mesh.rotation.x === 0 && mesh.rotation.y === 0 && mesh.rotation.z === 0 &&
@@ -323,7 +365,10 @@ export function StudioConfigurator({
     setFrameBusy(true);
     const t = setTimeout(async () => {
       try {
-        const built = await buildFrame({ w: tileW, d: tileD }, frameOpts);
+        // Outline as seen from the front (frame x right, y up = north), turned like the model.
+        const c = Math.cos(turn), sn = Math.sin(turn);
+        const shape = outline?.map(([x, y]) => [x * c - y * sn, x * sn + y * c] as [number, number]) ?? null;
+        const built = await buildFrame({ w: tileW, d: tileD }, frameOpts, shape);
         if (cancelled) return built.geometry.dispose();
         setFrame((old) => {
           old?.geometry.dispose();
@@ -339,7 +384,7 @@ export function StudioConfigurator({
       cancelled = true;
       clearTimeout(t);
     };
-  }, [frameOn, frameOpts, tileW, tileD]);
+  }, [frameOn, frameOpts, tileW, tileD, turn, outline]);
 
   function openFrame() {
     setFrameOn(true);
@@ -367,7 +412,7 @@ export function StudioConfigurator({
       geometry: f.geometry,
       color: frameOpts.color,
       parts: f.text ? [{ name: "Frame text", geometry: f.text, color: frameOpts.labelColor }] : [],
-      opening: frameOpts.back === "open" ? [f.size.opening.w - frameOpts.lip * 2, f.size.opening.d - frameOpts.lip * 2] : undefined,
+      opening: f.size.window ? [f.size.window.w, f.size.window.d] : undefined,
     };
   }
 
@@ -1101,6 +1146,8 @@ export function StudioConfigurator({
                       })
                     }
                     onResetAll={() => setBuildingEdits({})}
+                    onRemove={removeSelected}
+                    onRestoreRemoved={restoreRemoved}
                   />
                 )}
 

@@ -653,6 +653,8 @@ function CityAssembly({
         // What's baked into the vertices; a drag previews by moving the mesh on top.
         part.userData.baked = { dx, dy, dz };
         part.position.set(0, 0, 0);
+        // Removed: hidden here, and the exporter only takes visible meshes.
+        part.visible = !e?.removed;
         (part.material as THREE.MeshStandardMaterial).color.set(e?.color ?? layerColor(controls, L.layer, part.userData.colorHint));
         outline(part, sel.has(id));
       }
@@ -687,7 +689,7 @@ function CityAssembly({
       const targets: THREE.Object3D[] = [];
       for (const L of buildingLayers) targets.push(L.base, ...L.parts.values());
       if (terrain?.visible) targets.push(terrain);
-      const hit = ray.intersectObjects(targets, true)[0];
+      const hit = ray.intersectObjects(targets, true).find((h) => h.object.visible);
       if (!hit) return null;
       const partId = hit.object.userData.buildingId as string | undefined;
       if (partId) return { id: partId, point: hit.point };

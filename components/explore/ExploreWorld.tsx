@@ -99,6 +99,11 @@ export function ExploreWorld() {
     };
   }, [treeId, scanned]);
 
+  // The model is built squared up (the map rotation undone), so its outline
+  // is the shape without rotation; the Studio's frame follows it.
+  const scanShape = scan?.shape;
+  const outline = useMemo(() => (scanShape ? shapePolygon({ ...scanShape, rotation: 0 }) : undefined), [scanShape]);
+
   const layers = useMemo(
     () =>
       scan && builder
@@ -218,6 +223,7 @@ export function ExploreWorld() {
           water: 100,
         }}
         onBack={() => setPhase("customize")}
+        outline={outline}
         terrainControl={
           scan.heights.flat ? undefined : { ...terrain, busy: rebuilding, onChange: changeTerrainInStudio }
         }
